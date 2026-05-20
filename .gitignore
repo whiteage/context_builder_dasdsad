@@ -1,0 +1,31 @@
+# Secrets and environment
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+credentials*
+*secret*
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+dist/
+build/
+*.egg-info/
+.eggs/
+
+# IDE
+.idea/
+.vs/
+.vscode/
+
+# SQLite cache (auto-generated)
+.ai-context.db
+
+# OS
+Thumbs.db
+.DS_Store

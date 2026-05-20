@@ -1,0 +1,9 @@
+name: ctx_builder_dart_analyzer
+description: Dart AST analyzer for Context Builder Agent
+version: 1.0.0
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  analyzer: ^8.0.0

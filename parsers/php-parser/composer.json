@@ -1,0 +1,13 @@
+{
+    "name": "ctx-builder/php-parser",
+    "description": "PHP AST parser for Context Builder Agent",
+    "require": {
+        "php": ">=8.1",
+        "nikic/php-parser": "^5.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "CtxBuilder\\PhpParser\\": "src/"
+        }
+    }
+}

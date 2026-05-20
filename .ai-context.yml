@@ -1,0 +1,40 @@
+architecture:
+  auto_detect: true
+
+indexing:
+  exclude:
+    - "node_modules/**"
+    - ".git/**"
+    - "bin/**"
+    - "obj/**"
+    - "Library/**"
+    - "Temp/**"
+    - "dist/**"
+    - "build/**"
+    - "generated/**"
+    - "__pycache__/**"
+    - ".venv/**"
+    - "vendor/**"
+    - ".next/**"
+    - ".nuxt/**"
+    - "coverage/**"
+    - "*.min.js"
+    - "*.generated.*"
+    - "*.g.cs"
+    - "*.g.i.cs"
+    - "*.designer.cs"
+
+context:
+  max_tokens: 120000
+  include_tests: true
+  include_docs: true
+
+similarity:
+  enabled: true
+
+vector_search:
+  enabled: false
+
+model:
+  provider : deepseek
+  name : deepseek-chat

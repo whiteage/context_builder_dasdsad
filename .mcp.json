@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "ctx-builder": {
+      "command": "python",
+      "args": ["-m", "src.mcp_server"],
+      "cwd": "C:\\Users\\wh1te\\PycharmProjects\\PythonProject10"
+    }
+  }
+}

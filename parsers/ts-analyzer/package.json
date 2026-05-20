@@ -1,0 +1,9 @@
+{
+    "name": "ctx-builder-ts-analyzer",
+    "version": "1.0.0",
+    "description": "TypeScript AST analyzer for Context Builder Agent",
+    "type": "module",
+    "dependencies": {
+        "typescript": "^5.4.0"
+    }
+}

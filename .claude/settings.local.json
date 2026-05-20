@@ -1,0 +1,73 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install *)",
+      "Bash(python *)",
+      "Bash(ctx-build *)",
+      "Bash(echo *)",
+      "Bash(rm *)",
+      "Bash(find *)",
+      "Bash(grep *)",
+      "Bash(wc *)",
+      "Bash(ls *)",
+      "Bash(head *)",
+      "Bash(tail *)",
+      "Bash(cat *)",
+      "Bash(which *)",
+      "Bash(while *)",
+      "Bash(if *)",
+      "Bash(for *)",
+      "Bash(mkdir *)",
+      "Bash(stat *)",
+      "Bash(sleep *)",
+      "PowerShell(dotnet build *)",
+      "PowerShell(Get-ChildItem *)",
+      "PowerShell(Get-Content *)",
+      "MCP(ctx-builder:ctx_build)",
+      "MCP(ctx-builder:ctx_summary)",
+      "MCP(ctx-builder:ctx_search)",
+      "MCP(ctx-builder:ctx_dependencies)",
+      "MCP(ctx-builder:ctx_entities)",
+      "MCP(ctx-builder:ctx_gitlab_mr)",
+      "mcp__ctx-builder__ctx_summary",
+      "Bash(Get-ChildItem *)",
+      "mcp__ctx-builder__ctx_entities",
+      "mcp__ctx-builder__ctx_search",
+      "mcp__ctx-builder__ctx_dependencies",
+      "Bash(python3 *)",
+      "PowerShell(& \"C:\\\\Users\\\\wh1te\\\\PycharmProjects\\\\PythonProject10\\\\.venv\\\\Scripts\\\\python.exe\" \"C:\\\\Users\\\\wh1te\\\\PycharmProjects\\\\PythonProject10\\\\_check_dbs.py\")",
+      "mcp__ctx-builder__ctx_build",
+      "Bash(Get-Item test_nopcommerce_v6.md -ErrorAction SilentlyContinue)",
+      "Bash(Select-Object Length, LastWriteTime)",
+      "Bash(node *)",
+      "Bash(pip show *)",
+      "Bash(dotnet --version)",
+      "Bash(php --version)",
+      "Bash(dart --version)",
+      "Bash(where php *)",
+      "Bash(where dart *)",
+      "Bash(where composer *)",
+      "PowerShell(Get-Command *)",
+      "PowerShell(winget *)",
+      "PowerShell(dart pub *)",
+      "Bash(dotnet \"parsers/roslyn-analyzer/bin/Release/net8.0/RoslynAnalyzer.dll\" --project \"projects/FPSSample\")",
+      "Bash(/c/Users/wh1te/PycharmProjects/PythonProject2/.venv/Scripts/python -c ' *)",
+      "Read(//mnt/c/Users/wh1te/**)",
+      "Read(//c/Users/wh1te/PycharmProjects/**)"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "ctx-builder"
+  ],
+  "mcpServers": {
+    "ctx-builder": {
+      "command": "python",
+      "args": [
+        "-m",
+        "src.mcp_server"
+      ],
+      "cwd": "C:/Users/wh1te/PycharmProjects/PythonProject10"
+    }
+  }
+}
