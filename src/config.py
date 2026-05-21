@@ -145,8 +145,8 @@ class Config:
     include_docs: bool = True
     similarity_enabled: bool = True
     vector_search_enabled: bool = False
-    model_provider: str = field(default_factory=lambda: os.environ.get("CTX_BUILDER_DEFAULT_PROVIDER", "deepseek"))
-    model_name: str = field(default_factory=lambda: os.environ.get("CTX_BUILDER_DEFAULT_MODEL", "deepseek-chat"))
+    model_provider: str = field(default_factory=lambda: os.environ.get("CTX_BUILDER_DEFAULT_PROVIDER", ""))
+    model_name: str = field(default_factory=lambda: os.environ.get("CTX_BUILDER_DEFAULT_MODEL", ""))
 
     project_types: list[ProjectType] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -213,8 +213,8 @@ def load_config(
     config.similarity_enabled = merged["similarity"].get("enabled", True)
     config.vector_search_enabled = merged["vector_search"].get("enabled", False)
     config.raw = merged
-    config.model_provider = merged["model"].get("provider") or os.environ.get("CTX_BUILDER_DEFAULT_PROVIDER") or "deepseek"
-    config.model_name = merged["model"].get("name") or os.environ.get("CTX_BUILDER_DEFAULT_MODEL") or "deepseek-chat"
+    config.model_provider = os.environ.get("CTX_BUILDER_DEFAULT_PROVIDER") or merged["model"].get("provider") or ""
+    config.model_name = os.environ.get("CTX_BUILDER_DEFAULT_MODEL") or merged["model"].get("name") or ""
     # Detect project types
     config.project_types = _detect_project_types(project_path)
 

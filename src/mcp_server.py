@@ -22,6 +22,9 @@ from pathlib import Path
 _project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(_project_root))
 
+from dotenv import load_dotenv
+load_dotenv(_project_root / ".env")
+
 from mcp.server import Server
 from mcp.server.stdio import stdio_server
 from mcp.types import Tool, TextContent
@@ -53,13 +56,11 @@ async def list_tools() -> list[Tool]:
                     "provider": {
                         "type": "string",
                         "enum": ["openai", "deepseek", "anthropic", "local"],
-                        "default": "deepseek",
-                        "description": "LLM provider. 'local' for OpenAI-compatible endpoints (Ollama, LM Studio, vLLM). Set LOCAL_LLM_URL env var.",
+                        "description": "LLM provider. 'local' for OpenAI-compatible endpoints (Ollama, LM Studio, vLLM). Set LOCAL_LLM_URL env var. Defaults to CTX_BUILDER_DEFAULT_PROVIDER env var.",
                     },
                     "model": {
                         "type": "string",
-                        "default": "deepseek-chat",
-                        "description": "Model name (e.g. gpt-4o, deepseek-chat, claude-opus-4-7).",
+                        "description": "Model name (e.g. gpt-4o, deepseek-chat, claude-opus-4-7). Defaults to CTX_BUILDER_DEFAULT_MODEL env var.",
                     },
                 },
                 "required": ["project", "task"],
@@ -107,8 +108,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
 async def _handle_build(args: dict) -> list[TextContent]:
     project = args["project"]
     task = args["task"]
-    provider = args.get("provider", "deepseek")
-    model = args.get("model", "deepseek-chat")
 
     # Resolve project path
     project_path = Path(project)
@@ -119,6 +118,12 @@ async def _handle_build(args: dict) -> list[TextContent]:
         return [TextContent(type="text", text=f"Project not found: {project_path}")]
 
     config = load_config(str(project_path))
+    provider = args.get("provider") or config.model_provider
+    model = args.get("model") or config.model_name
+    if not model:
+        return [TextContent(type="text", text="Не указана модель. Установите CTX_BUILDER_DEFAULT_MODEL в .env или передайте параметр model")]
+    if not provider:
+        return [TextContent(type="text", text="Не указан провайдер. Установите CTX_BUILDER_DEFAULT_PROVIDER в .env или передайте параметр provider")]
     detected = [p.label for p in config.project_types]
 
     # Build index

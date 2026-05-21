@@ -49,10 +49,10 @@ def create_model(provider: str, model_name: str,
 @click.option("--project", "-p", default=".", type=click.Path(exists=True),
               help="Project root directory")
 @click.option("--task", "-t", help="Task description for the agent")
-@click.option("--provider", default="openai",
+@click.option("--provider", default=None,
               type=click.Choice(["openai", "deepseek", "anthropic", "local"]),
-              help="LLM provider (local = OpenAI-compatible, e.g. Ollama, LM Studio)")
-@click.option("--model", "-m", default="gpt-4o", help="Model name")
+              help="LLM provider (defaults to CTX_BUILDER_DEFAULT_PROVIDER env var)")
+@click.option("--model", "-m", default=None, help="Model name (defaults to CTX_BUILDER_DEFAULT_MODEL env var)")
 @click.option("--output", "-o", default=None, help="Output file (stdout if not set)")
 @click.option("--gitlab-mr", default=None,
               help="GitLab MR in format 'PROJECT_ID:MR_IID' (e.g. '123:5'). Requires GITLAB_TOKEN env var.")
@@ -89,8 +89,12 @@ def main(project: str, task: str | None, provider: str, model: str,
     click.echo()
 
     # CLI overrides config defaults
-    actual_provider = provider or config.model_provider or "openai"
-    actual_model = model or config.model_name or "gpt-4o"
+    actual_provider = provider or config.model_provider
+    actual_model = model or config.model_name
+    if not actual_model:
+        raise click.UsageError("Не указана модель. Установите CTX_BUILDER_DEFAULT_MODEL в .env или передайте --model")
+    if not actual_provider:
+        raise click.UsageError("Не указан провайдер. Установите CTX_BUILDER_DEFAULT_PROVIDER в .env или передайте --provider")
 
     llm = create_model(actual_provider, actual_model)
 
