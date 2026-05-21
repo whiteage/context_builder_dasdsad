@@ -88,7 +88,9 @@ class PHPParser(BaseParser):
             if result.returncode != 0:
                 logger.warning("PHP parser failed, using regex fallback: %s", result.stderr[:200])
                 return self._parse_fallback(project_path, files)
-            return _parse_php_output(result.stdout)
+            parsed = _parse_php_output(result.stdout)
+            PHPParser._enrich_calls(project_path, parsed)
+            return parsed
         except FileNotFoundError:
             logger.warning("php not found, using regex fallback")
             return self._parse_fallback(project_path, files)
@@ -98,6 +100,50 @@ class PHPParser(BaseParser):
         except FileNotFoundError:
             logger.warning("php not found, using regex fallback")
             return self._parse_fallback(project_path, files)
+
+    @staticmethod
+    def _enrich_calls(project_path: str, index: ASTIndex) -> None:
+        """Post-process PHP parser output: extract method calls from source files.
+
+        The PHP parser (analyze.php) doesn't export call information, so we
+        scan method bodies with the same regex used in the fallback parser.
+        """
+        project_dir = Path(project_path)
+        method_re = re.compile(
+            r"(?:#\[([^\]]+)\]\s*)*"
+            r"(public|private|protected|static|\s)*"
+            r"function\s+(\w+)\s*\(([^)]*)\)",
+        )
+
+        for file_path, fast in index.files.items():
+            if not fast.classes or any(
+                m.calls for cls in fast.classes for m in cls.methods if m.calls
+            ):
+                continue
+            try:
+                source = (project_dir / file_path).read_text(encoding="utf-8", errors="replace")
+            except Exception:
+                continue
+
+            method_calls: dict[str, list[str]] = {}
+            for mm in method_re.finditer(source):
+                method_name = mm.group(3)
+                body_start = mm.end()
+                body_chunk = source[body_start:body_start + 2000]
+                stripped = body_chunk.lstrip()
+                if stripped and stripped[0] != "{":
+                    continue
+                calls = extract_calls(body_chunk)
+                if calls:
+                    method_calls[method_name] = list(calls)
+
+            if not method_calls:
+                continue
+
+            for cls in fast.classes:
+                for m in cls.methods:
+                    if m.name in method_calls:
+                        m.calls = method_calls[m.name]
 
     def _parse_fallback(self, project_path: Path, files: list[str] | None = None) -> ASTIndex:
         """Regex-based fallback for PHP files."""
@@ -145,13 +191,14 @@ class PHPParser(BaseParser):
 
                     # Methods
                     chunk = content[m.end():m.end() + 5000]
+                    chunk_start = m.end()
                     for mm in re.finditer(
                         r"(?:#\[([^\]]+)\]\s*\n\s*)*"
                         r"(public|private|protected|static|\s)*"
                         r"function\s+(\w+)\s*\(([^)]*)\)",
                         chunk,
                     ):
-                        body_chunk = content[mm.end():mm.end() + 2000]
+                        body_chunk = content[chunk_start + mm.end():chunk_start + mm.end() + 2000]
                         method = MethodDecl(name=mm.group(3), calls=extract_calls(body_chunk))
                         params_str = mm.group(4)
                         if params_str.strip():

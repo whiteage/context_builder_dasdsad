@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 DART_ANALYZER_SCRIPT = (
     Path(__file__).parent.parent.parent / "parsers" / "dart-analyzer" / "analyze.dart"
-)
+).resolve()
 
 
 def _find_dart_exe() -> str:
@@ -82,7 +82,7 @@ class DartParser(BaseParser):
             result = subprocess.run(
                 cmd,
                 capture_output=True, text=True,
-                timeout=120, cwd=str(project_path),
+                timeout=120,
             )
             if result.returncode != 0:
                 logger.warning("Dart analyzer failed, using regex fallback: %s", result.stderr[:200])
@@ -149,6 +149,7 @@ class DartParser(BaseParser):
 
                     # Methods
                     chunk = content[m.end():m.end() + 5000]
+                    chunk_start = m.end()
                     for mm in re.finditer(
                         r"(?:@(\w+)\s*\n\s*)*"
                         r"((?:static|const|final|\s)+)?"
@@ -157,7 +158,7 @@ class DartParser(BaseParser):
                         chunk,
                     ):
                         modifiers_str = (mm.group(2) or "").strip()
-                        body_chunk = content[mm.end():mm.end() + 2000]
+                        body_chunk = content[chunk_start + mm.end():chunk_start + mm.end() + 2000]
                         method = MethodDecl(
                             name=mm.group(4),
                             return_type=mm.group(3).strip() if mm.group(3) else None,

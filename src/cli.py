@@ -19,7 +19,7 @@ from src.tools import create_tools
 
 load_dotenv()
 def create_model(provider: str, model_name: str,
-                 max_output_tokens: int = 16000) -> BaseChatModel:
+                 max_output_tokens: int = 32000) -> BaseChatModel:
     if provider == "openai":
         return ChatOpenAI(model=model_name, temperature=0,
                           max_tokens=max_output_tokens)
@@ -77,7 +77,10 @@ def main(project: str, task: str | None, provider: str, model: str,
 
     config = load_config(project)
     index = ProjectIndex.load_or_build(config)
-    tools = create_tools(index)
+
+    from src.tools import ToolContext
+    ctx = ToolContext(token_budget=config.agent_token_budget)
+    tools = create_tools(index, ctx)
 
     click.echo(f"Project: {config.project_path}")
     click.echo(f"Detected: {[p.label for p in config.project_types]}")
@@ -91,8 +94,8 @@ def main(project: str, task: str | None, provider: str, model: str,
 
     llm = create_model(actual_provider, actual_model)
 
-    agent = CtxBuilderAgent(model=llm, tools=tools)
-    result = agent.run(task)
+    agent = CtxBuilderAgent(model=llm, tools=tools, ctx=ctx, max_steps=config.max_steps)
+    result = agent.run(task, token_budget=config.agent_token_budget)
 
     tokens = count_tokens(result)
     max_tokens = config.max_tokens

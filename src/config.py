@@ -58,6 +58,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "indexing": {"exclude": DEFAULT_EXCLUDE},
     "context": {
         "max_tokens": 120000,
+        "agent_token_budget": 30000,
+        "max_steps": 12,
         "include_tests": True,
         "include_docs": True,
     },
@@ -138,6 +140,8 @@ class Config:
     architecture_auto_detect: bool = True
     index_exclude: list[str] = field(default_factory=lambda: DEFAULT_EXCLUDE.copy())
     max_tokens: int = 120000
+    agent_token_budget: int = 30000
+    max_steps: int = 12
     include_tests: bool = True
     include_docs: bool = True
     similarity_enabled: bool = True
@@ -203,6 +207,8 @@ def load_config(
     config.architecture_auto_detect = merged["architecture"].get("auto_detect", True)
     config.index_exclude = merged["indexing"].get("exclude", DEFAULT_EXCLUDE)
     config.max_tokens = merged["context"].get("max_tokens", 120000)
+    config.agent_token_budget = merged["context"].get("agent_token_budget", 30000)
+    config.max_steps = merged["context"].get("max_steps", 12)
     config.include_tests = merged["context"].get("include_tests", True)
     config.include_docs = merged["context"].get("include_docs", True)
     config.similarity_enabled = merged["similarity"].get("enabled", True)

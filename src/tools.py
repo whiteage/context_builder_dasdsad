@@ -2,11 +2,46 @@
 from __future__ import annotations
 
 import re
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from langchain_core.tools import tool
 
 from src.index import ProjectIndex, count_tokens
+
+
+@dataclass
+class ToolContext:
+    """Tracks dedup state and token budget across tool calls in an agent session."""
+
+    token_budget: int = 30000
+    tokens_used: int = 0
+    read_ranges: dict[str, set[tuple[int, int]]] = field(default_factory=dict)
+    compacted: set[str] = field(default_factory=set)
+
+    def consume(self, tokens: int) -> None:
+        self.tokens_used += tokens
+
+    def remaining(self) -> int:
+        return max(0, self.token_budget - self.tokens_used)
+
+    def mark_read(self, path: str, start: int, end: int) -> None:
+        if path not in self.read_ranges:
+            self.read_ranges[path] = set()
+        self.read_ranges[path].add((start, end))
+
+    def is_range_covered(self, path: str, start: int, end: int) -> bool:
+        for r_start, r_end in self.read_ranges.get(path, set()):
+            if r_start <= start and r_end >= end:
+                return True
+        return False
+
+    def mark_compacted(self, path: str) -> None:
+        self.compacted.add(path)
+
+    def is_compacted(self, path: str) -> bool:
+        return path in self.compacted
+
 
 # Patterns for secrets masking
 _SECRET_PATTERNS = [
@@ -44,8 +79,10 @@ def mask_secrets(text: str) -> str:
     return text
 
 
-def create_tools(index: ProjectIndex) -> list:
-    """Create tool instances bound to a ProjectIndex."""
+def create_tools(index: ProjectIndex, ctx: ToolContext = None) -> list:
+    """Create tool instances bound to a ProjectIndex and optional ToolContext."""
+    if ctx is None:
+        ctx = ToolContext()
 
     @tool
     def list_files(directory: str = ".") -> str:
@@ -95,30 +132,39 @@ def create_tools(index: ProjectIndex) -> list:
         if end_line == 0:
             end_line = total
 
+        start = max(1, start_line) - 1
+        end = min(end_line, total)
+
+        # Dedup: skip already-read ranges
+        if ctx.is_range_covered(path, start + 1, end):
+            return f"[SKIP] {path} lines {start + 1}-{end} already read. Remaining budget: {ctx.remaining()} tokens."
+
         # Auto-dedup: if reading entire large file, suggest compact_file first
         reading_all = (start_line == 1 and end_line == total)
         if reading_all and total > 80:
+            preview = mask_secrets("\n".join(
+                f"{i + 1}: {line}" for i, line in enumerate(lines[:30])
+            ))
+            ctx.mark_read(path, 1, 30)
             return (
                 f"File: {path} ({total} lines total)\n"
                 f"[TIP: This file is {total} lines. Use compact_file('{path}') first to see only signatures.\n"
                 f" Then use read_file('{path}', start_line=X, end_line=Y) to read specific sections.\n"
                 f" First 30 lines as preview:\n]"
-                + mask_secrets("\n".join(
-                    f"{i + 1}: {line}" for i, line in enumerate(lines[:30])
-                ))
+                + preview
             )
-
-        start = max(1, start_line) - 1
-        end = min(end_line, total)
 
         result = mask_secrets("\n".join(
             f"{i + 1}: {line}"
             for i, line in enumerate(lines[start:end], start=start)
         ))
-        header = f"File: {path} (lines {start + 1}-{end} of {total})"
         token_count = count_tokens(result)
+        ctx.consume(token_count)
+        ctx.mark_read(path, start + 1, end)
+
+        header = f"File: {path} (lines {start + 1}-{end} of {total})"
         if token_count > 2000:
-            header += f" [~{token_count} tokens. For large files use compact_file() first, then read specific ranges.]"
+            header += f" [~{token_count} tokens. Budget remaining: {ctx.remaining()}. Use compact_file() first for large files.]"
         return f"{header}\n{result}"
 
     @tool
@@ -354,15 +400,31 @@ def create_tools(index: ProjectIndex) -> list:
         Args:
             path: File path relative to project root.
         """
+        if ctx.is_compacted(path):
+            return f"[SKIP] {path} already compacted. Use read_file() for specific sections."
         result = index.compact_source(path)
         if result is None:
             return f"Cannot compact: {path}"
+        token_count = count_tokens(result)
+        ctx.consume(token_count)
+        ctx.mark_compacted(path)
         return mask_secrets(result)
 
     @tool
     def get_summary() -> str:
         """Get a high-level summary of the project: file counts, languages, structure."""
         return index.summarize()
+
+    @tool
+    def get_token_budget() -> str:
+        """Check remaining token budget. Call before reading large files.
+
+        Returns used tokens, remaining budget, and files already read/compacted.
+        """
+        return (
+            f"Token budget: {ctx.tokens_used} used, {ctx.remaining()} remaining (of {ctx.token_budget}).\n"
+            f"Files read: {len(ctx.read_ranges)}. Files compacted: {len(ctx.compacted)}."
+        )
 
     @tool
     def get_docs() -> str:
@@ -420,4 +482,4 @@ def create_tools(index: ProjectIndex) -> list:
     return [list_files, read_file, search_symbol, get_dependencies, find_files,
             get_call_graph, get_module_graph, sample_signatures,
             rank_files, find_similar, compact_file, classify_entities,
-            get_summary, get_docs]
+            get_summary, get_docs, get_token_budget]

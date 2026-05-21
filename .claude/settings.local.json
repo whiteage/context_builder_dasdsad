@@ -53,7 +53,9 @@
       "Bash(dotnet \"parsers/roslyn-analyzer/bin/Release/net8.0/RoslynAnalyzer.dll\" --project \"projects/FPSSample\")",
       "Bash(/c/Users/wh1te/PycharmProjects/PythonProject2/.venv/Scripts/python -c ' *)",
       "Read(//mnt/c/Users/wh1te/**)",
-      "Read(//c/Users/wh1te/PycharmProjects/**)"
+      "Read(//c/Users/wh1te/PycharmProjects/**)",
+      "Bash(dart run *)",
+      "Bash(Select-Object Name)"
     ]
   },
   "enableAllProjectMcpServers": true,

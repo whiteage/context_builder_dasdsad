@@ -311,8 +311,8 @@ List<String> _modifiers(AstNode node) {
   // They are embedded in the token stream. For simplicity, return empty.
   final mods = <String>[];
   // Check for static on supported member types
+  // Constructors don't have isStatic in Dart analyzer >=3.x
   if (node is MethodDeclaration && node.isStatic) mods.add('static');
-  if (node is ConstructorDeclaration && node.isStatic) mods.add('static');
   if (node is FieldDeclaration && node.isStatic) mods.add('static');
   return mods;
 }

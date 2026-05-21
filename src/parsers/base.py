@@ -164,8 +164,8 @@ def extract_calls(chunk: str) -> list[str]:
     import re
     calls: set[str] = set()
 
-    # Qualified calls: obj.method() or Class.method()
-    for m in re.finditer(r"(\w[\w.]*)\s*\(", chunk):
+    # Qualified calls: obj.method(), Class.method(), or generic Method<T>(args)
+    for m in re.finditer(r"(\w[\w.]*)\s*(?:<[^<>]*>)?\s*\(", chunk):
         full = m.group(1)
         if full.startswith(".") or full.endswith("."):
             continue

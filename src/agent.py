@@ -4,19 +4,21 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage, ToolMessage, HumanMessage, AnyMessage
 from langgraph.graph import END, StateGraph, add_messages
 
-from src.prompts.system import SYSTEM_PROMPT
+from src.prompts.system import make_gatherer_prompt, make_writer_prompt, STRUCTURED_TOOLS
 
 
 class AgentState(TypedDict):
-    messages : Annotated[list[AnyMessage],add_messages]
-
+    messages: Annotated[list[AnyMessage], add_messages]
+    step_count: int
 
 
 class CtxBuilderAgent:
-    def __init__(self, model : BaseChatModel, tools: list) -> None:
+    def __init__(self, model: BaseChatModel, tools: list, ctx=None, max_steps: int = 12) -> None:
         self.llm = model
         self.tools = tools
-        self._tools_by_name = {t.name : t for t in self.tools}
+        self.ctx = ctx
+        self.max_steps = max_steps
+        self._tools_by_name = {t.name: t for t in self.tools}
         self.graph = self._build_graph()
 
     def _build_graph(self) -> Any:
@@ -58,23 +60,63 @@ class CtxBuilderAgent:
                 content = f"Unknown tool: {tc['name']}"
             results.append(ToolMessage(content=str(content), tool_call_id=tc["id"]))
 
-        return {"messages": results}
+        new_step = state.get("step_count", 0) + 1
+        return {"messages": results, "step_count": new_step}
 
-    @staticmethod
-    def _router(state: AgentState) -> Literal["tools", "end"]:
+    def _router(self, state: AgentState) -> Literal["tools", "end"]:
+        step = state.get("step_count", 0)
+        if step >= self.max_steps:
+            return "end"
         last = state["messages"][-1]
         if hasattr(last, "tool_calls") and last.tool_calls:
             return "tools"
         return "end"
 
-    def run(self, task: str) -> str:
+    def run(self, task: str, token_budget: int = 30000) -> str:
+        # Phase 1: Gather — let the agent collect tool data
+        gatherer_prompt = make_gatherer_prompt(token_budget=token_budget, max_steps=self.max_steps)
         result = self.graph.invoke({
-            "messages": [SystemMessage(content=SYSTEM_PROMPT), HumanMessage(content=task)]
+            "messages": [SystemMessage(content=gatherer_prompt), HumanMessage(content=task)],
+            "step_count": 0,
         })
-        # LangGraph may return a final message with tool_calls and content=None.
-        # Walk backwards to find the last message with actual text content.
-        for msg in reversed(result["messages"]):
-            content = getattr(msg, "content", None)
-            if content:
-                return content
-        return "Agent produced no text output — the model may have returned empty content."
+
+        # Extract structured tool results from the conversation
+        collected = self._extract_tool_results(result["messages"])
+
+        if not collected:
+            return "Gatherer collected no data — no tools were called. Check project indexing."
+
+        # Phase 2: Write — produce the 8-section document from collected data
+        writer_prompt = make_writer_prompt(task=task, collected=collected)
+        try:
+            response = self.llm.invoke(writer_prompt)
+            content = getattr(response, "content", None)
+            return str(content) if content else "Writer produced no output."
+        except Exception as e:
+            return f"Writer error: {str(e)}"
+
+    def _extract_tool_results(self, messages: list) -> dict[str, str]:
+        """Pull tool call names and their results out of the conversation history."""
+        collected: dict[str, list[str]] = {}
+        for msg in messages:
+            if isinstance(msg, ToolMessage):
+                tool_name = getattr(msg, "tool_call_id", None) or getattr(msg, "name", None)
+                # Match tool_call_id back to the preceding AI message's tool_calls
+                if tool_name:
+                    for prev in messages:
+                        tc_list = getattr(prev, "tool_calls", None) or []
+                        for tc in tc_list:
+                            if tc.get("id") == tool_name:
+                                tool_name = tc.get("name", tool_name)
+                                break
+                collected.setdefault(str(tool_name), []).append(str(msg.content))
+        # Deduplicate: keep last occurrence per tool (most complete data)
+        result = {}
+        for name, contents in collected.items():
+            # For most tools, keep the last result (most complete)
+            # For read_file, compact_file — keep all since each is a different file
+            if name in ("read_file", "compact_file", "get_dependencies"):
+                result[name] = "\n---\n".join(contents[-3:])  # Keep last 3 to avoid bloat
+            else:
+                result[name] = contents[-1] if contents else ""
+        return result

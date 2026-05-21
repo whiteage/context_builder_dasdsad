@@ -210,11 +210,13 @@ async def _handle_build(args: dict) -> list[TextContent]:
     from src.cli import create_model
     from src.agent import CtxBuilderAgent
 
+    from src.tools import ToolContext
+    ctx = ToolContext(token_budget=config.agent_token_budget)
     llm = create_model(provider, model)
-    tools = create_tools(index)
-    agent = CtxBuilderAgent(model=llm, tools=tools)
+    tools = create_tools(index, ctx)
+    agent = CtxBuilderAgent(model=llm, tools=tools, ctx=ctx, max_steps=config.max_steps)
 
-    result = agent.run(task)
+    result = agent.run(task, token_budget=config.agent_token_budget)
     if not result:
         return [TextContent(type="text", text="Agent produced no output. The model may have returned empty content. Try a different model or provider.")]
 

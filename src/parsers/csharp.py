@@ -24,9 +24,9 @@ from src.parsers.base import (
 
 logger = logging.getLogger(__name__)
 
-# Locate the Roslyn analyzer DLL (pre-built, avoids global.json SDK version issues).
-_ROSLYN_BASE = Path(__file__).parent.parent.parent / "parsers" / "roslyn-analyzer"
-_ROSLYN_DLL = _ROSLYN_BASE / "bin" / "Release" / "net8.0" / "RoslynAnalyzer.dll"
+# Locate the Roslyn analyzer DLL (pre-built, absolute path to avoid cwd issues).
+_ROSLYN_BASE = (Path(__file__).parent.parent.parent / "parsers" / "roslyn-analyzer").resolve()
+_ROSLYN_DLL = (_ROSLYN_BASE / "bin" / "Release" / "net8.0" / "RoslynAnalyzer.dll").resolve()
 
 
 class CSharpParser(BaseParser):
@@ -77,7 +77,7 @@ class CSharpParser(BaseParser):
             result = subprocess.run(
                 cmd,
                 capture_output=True, text=True,
-                timeout=120, cwd=str(project_path),
+                timeout=120,
                 env={**os.environ, "DOTNET_CLI_TELEMETRY_OPTOUT": "1"},
             )
             if result.returncode != 0:
@@ -88,6 +88,8 @@ class CSharpParser(BaseParser):
             if not parsed.files:
                 logger.warning("Roslyn produced no results, using regex fallback")
                 return self._parse_fallback(project_path, files)
+            # Roslyn doesn't extract method calls — enrich from source
+            _enrich_calls_from_source(project_path, parsed)
             return parsed
         except subprocess.TimeoutExpired:
             logger.warning("Roslyn analyzer timed out, using regex fallback")
@@ -145,15 +147,22 @@ class CSharpParser(BaseParser):
                             else:
                                 cls.base_types.append(b)
 
-                    # Methods
+                    # Methods — match declarations, filter out invocations by checking
+                    # that the match is followed by a '{' body start.
+                    search_start = m.end()
                     for mm in re.finditer(
-                        r"(?:\[([^\]]+)\]\s*\n\s*)*"
-                        r"(public|private|protected|internal|static|virtual|override|abstract|async|\s)*"
-                        r"(?:([\w<>\[\],\s]+)\s+)?"
-                        r"(\w+)\s*\(([^)]*)\)",
-                        content[m.end():m.end() + 2000],
+                        r"(?:\[([^\]]+)\]\s*)*"                  # Attributes (optional)
+                        r"((?:(?:public|private|protected|internal|static|virtual|override|abstract|async|extern|unsafe|partial|sealed|readonly|volatile)\s+)*)"
+                        r"(?:([\w<>\[\],.]+)\s+)?"              # Return type (optional, no spaces)
+                        r"(\w+)\s*\(([^)]*)\)",                   # Method name + params
+                        content[search_start:search_start + 5000],
                     ):
-                        body_chunk = content[mm.end():mm.end() + 2000]
+                        body_start = search_start + mm.end()
+                        body_chunk = content[body_start:body_start + 2000]
+                        # Skip method invocations: declarations have '{' before any ';'
+                        stripped = body_chunk.lstrip()
+                        if stripped and stripped[0] != '{':
+                            continue
                         method = MethodDecl(
                             name=mm.group(4),
                             return_type=mm.group(3).strip() if mm.group(3) else None,
@@ -185,6 +194,56 @@ class CSharpParser(BaseParser):
             len(c.methods) for f in index.files.values() for c in f.classes
         )
         return index
+
+
+def _enrich_calls_from_source(project_path: str, index: ASTIndex) -> None:
+    """Post-process Roslyn output: extract method calls from source files.
+
+    Roslyn doesn't export call information, so we scan method bodies with
+    the same regex-based approach used in the fallback parser. Processes
+    all files that have methods but no call data.
+    """
+    import re
+    project_dir = Path(project_path)
+
+    method_re = re.compile(
+        r"(?:\[([^\]]+)\]\s*)*"
+        r"((?:(?:public|private|protected|internal|static|virtual|override|abstract|async|extern|unsafe|partial|sealed|readonly|volatile)\s+)*)"
+        r"(?:([\w<>\[\],.]+)\s+)?"
+        r"(\w+)\s*\(([^)]*)\)",
+    )
+
+    for file_path, fast in index.files.items():
+        if not fast.classes or any(
+            m.calls for cls in fast.classes for m in cls.methods if m.calls
+        ):
+            continue
+        try:
+            source = (project_dir / file_path).read_text(encoding="utf-8", errors="replace")
+        except Exception:
+            continue
+
+        # Build a method-name → set of calls map from the source
+        method_calls: dict[str, list[str]] = {}
+        for mm in method_re.finditer(source):
+            method_name = mm.group(4)
+            body_start = mm.end()
+            body_chunk = source[body_start:body_start + 2000]
+            stripped = body_chunk.lstrip()
+            if stripped and stripped[0] != "{":
+                continue
+            calls = extract_calls(body_chunk)
+            if calls:
+                method_calls[method_name] = list(calls)
+
+        if not method_calls:
+            continue
+
+        # Assign calls to matching methods
+        for cls in fast.classes:
+            for m in cls.methods:
+                if m.name in method_calls:
+                    m.calls = method_calls[m.name]
 
 
 def _parse_output(stdout: str) -> ASTIndex:

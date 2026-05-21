@@ -43,6 +43,12 @@ class DependencyGraph:
                     dents.setdefault(resolved, set()).add(path)
 
         call_graph = cls._build_call_graph(ast)
+
+        # Enrich with file-level deps inferred from type references and method calls.
+        # This is critical for projects where import-based resolution yields few edges
+        # (e.g. Unity C# global-namespace projects, or loosely-typed languages).
+        cls._infer_deps_from_ast(deps, dents, call_graph, ast)
+
         module_graph = cls._build_module_graph(deps)
 
         return cls(
@@ -62,6 +68,83 @@ class DependencyGraph:
                     key = f"{path}:{cls.name}.{m.name}"
                     graph[key] = set(m.calls)
         return graph
+
+    @staticmethod
+    def _infer_deps_from_ast(deps: dict[str, set[str]], dents: dict[str, set[str]],
+                             call_graph: dict[str, set[str]], ast: ASTIndex) -> None:
+        """Fallback: infer file-level deps from type references and method calls.
+
+        Used when import-based resolution yields 0 edges (e.g. Unity C# projects where
+        all files live in the global namespace). Builds indexes from all parsed classes
+        and resolves type names found in method signatures, return types, and call targets.
+        """
+        # Index: class_name.lower() → {file_path, ...}
+        class_files: dict[str, set[str]] = {}
+        for path, fast in ast.files.items():
+            for cls in fast.classes:
+                class_files.setdefault(cls.name.lower(), set()).add(path)
+
+        def _resolve_type(type_name: str) -> str | None:
+            """Resolve a simple type name to a file. Strips generics and arrays."""
+            clean = type_name.split("<")[0].split("[")[0].replace("?", "").strip()
+            if clean and clean[0].isupper():
+                files = class_files.get(clean.lower())
+                if files and len(files) == 1:
+                    return next(iter(files))
+            return None
+
+        for path, fast in ast.files.items():
+            for cls in fast.classes:
+                # Return type → dependency
+                for m in cls.methods:
+                    if m.return_type:
+                        dep = _resolve_type(m.return_type)
+                        if dep and dep != path:
+                            deps[path].add(dep)
+                            dents.setdefault(dep, set()).add(path)
+                    # Parameter types → dependencies
+                    for p in m.parameters:
+                        if p.type:
+                            dep = _resolve_type(p.type)
+                            if dep and dep != path:
+                                deps[path].add(dep)
+                                dents.setdefault(dep, set()).add(path)
+                    # Constructor parameter types
+                for c in cls.constructors:
+                    for p in c.parameters:
+                        if p.type:
+                            dep = _resolve_type(p.type)
+                            if dep and dep != path:
+                                deps[path].add(dep)
+                                dents.setdefault(dep, set()).add(path)
+
+        # Also use call graph data: calls to methods owned by other files
+        if call_graph:
+            method_files: dict[str, set[str]] = {}
+            for p, fast in ast.files.items():
+                for cls in fast.classes:
+                    for m in cls.methods:
+                        method_files.setdefault(m.name.lower(), set()).add(p)
+
+            for call_key, targets in call_graph.items():
+                source_file = call_key.split(":")[0]
+                for target in targets:
+                    t_lower = target.lower()
+                    # Class-type reference: uppercase name in call list
+                    if target and target[0].isupper():
+                        files = class_files.get(t_lower)
+                        if files:
+                            for tf in files:
+                                if tf != source_file:
+                                    deps[source_file].add(tf)
+                                    dents.setdefault(tf, set()).add(source_file)
+                    # Method call target
+                    files = method_files.get(t_lower)
+                    if files:
+                        for tf in files:
+                            if tf != source_file:
+                                deps[source_file].add(tf)
+                                dents.setdefault(tf, set()).add(source_file)
 
     @staticmethod
     def _build_module_graph(file_deps: dict[str, set[str]]) -> dict[str, set[str]]:
@@ -376,6 +459,48 @@ class FileInfo:
     ast: FileAST | None
 
 
+# Directory-based entity type mapping for _guess_entity_type.
+_DIR_ENTITY_MAP: dict[str, str] = {
+    # Strong signal: exact directory name → entity type
+    "controllers": "controller", "controller": "controller",
+    "services": "service", "service": "service",
+    "middleware": "middleware", "middlewares": "middleware",
+    "repositories": "repository", "repository": "repository",
+    "routes": "route", "router": "route",
+    "stores": "store", "store": "store",
+    "composables": "composable", "composable": "composable",
+    "pages": "page", "page": "page",
+    "widgets": "widget", "widget": "widget",
+    "components": "widget",  # Vue/React components
+    "layouts": "layout", "layout": "layout",
+    "validators": "validator", "validator": "validator",
+    "factories": "factory", "factory": "factory",
+    "models": "dto", "dto": "dto", "domains": "entity",
+    "handlers": "handler", "handler": "handler",
+    "utils": "utility", "helpers": "utility",
+    "plugins": "plugin", "extensions": "plugin",
+    "migrations": "migration",
+    "operations": "operation",
+    "entities": "entity",
+    "views": "page",
+    "displays": "widget",
+    "interfaces": "widget",
+    "modules": "plugin",
+    "panels": "widget",
+    "providers": "service",
+    "config": "config", "configuration": "config",
+    "tests": "test", "test": "test", "__tests__": "test",
+    "scripts": "script",
+    "hooks": "composable",
+    "directives": "utility",
+    "lang": "config",
+    "styles": "style",
+    "types": "dto",
+    "database": "repository",
+    "seeders": "migration",
+}
+
+
 @dataclass
 class ProjectIndex:
     repo: RepoIndex
@@ -526,22 +651,29 @@ class ProjectIndex:
         "controller": 10, "handler": 9, "service": 8, "repository": 7,
         "entity": 6, "dto": 5, "validator": 5, "middleware": 4,
         "page": 6, "widget": 5, "composable": 5, "store": 4,
-        "system": 8, "prefab": 4,
+        "route": 4, "factory": 4, "system": 8, "prefab": 4,
     }
 
     def _guess_entity_type(self, path: str) -> str:
-        """Guess entity type from file path and class names."""
-        import fnmatch
+        """Guess entity type from directory structure and file name.
+
+        Uses directory-based mapping (strongest path signal) first, then
+        falls back to keyword match in filename.
+        """
         lower = path.lower()
         name = Path(path).stem.lower()
 
+        # Directory-based: match path components against known dir names
+        parts = lower.replace("\\", "/").split("/")
+        for part in parts:
+            if part in _DIR_ENTITY_MAP:
+                return _DIR_ENTITY_MAP[part]
+
+        # Keyword-based: check if entity type keyword appears in path or name
         for etype in self.ENTITY_PRIORITY:
             if etype in name or etype in lower:
                 return etype
-        if fnmatch.fnmatch(name, "*controller*"): return "controller"
-        if fnmatch.fnmatch(name, "*service*"): return "service"
-        if fnmatch.fnmatch(name, "*repository*"): return "repository"
-        if fnmatch.fnmatch(name, "*handler*"): return "handler"
+
         return "unknown"
 
     def rank_files(self, paths: list[str], center_path: str = "") -> list[tuple[str, float]]:
@@ -633,8 +765,11 @@ class ProjectIndex:
         scored.sort(key=lambda x: x[3], reverse=True)
         return [(p, n, r) for p, n, r, _ in scored[:n]]
 
-    def compact_source(self, path: str) -> str | None:
-        """Return a compact version of a source file: signatures only, no bodies, no comments."""
+    def compact_source(self, path: str, max_tokens: int = 2000) -> str | None:
+        """Return a compact version of a source file: signatures only, no bodies, no comments.
+
+        Truncates to fit within max_tokens using tiktoken estimation.
+        """
         entry = self.repo.files.get(path)
         if entry is None:
             return None
@@ -671,9 +806,23 @@ class ProjectIndex:
         if not signatures:
             return None
 
-        return f"Compact view of {path} ({len(signatures)} signatures):\n" + "\n".join(
-            f"  {s}" for s in signatures[:80]
-        )
+        header = f"Compact view of {path}"
+        # Build output incrementally, stop when token budget exceeded
+        lines = [header]
+        header_tokens = count_tokens(header)
+        budget = max_tokens - header_tokens - 20  # reserve for truncation notice
+        included = 0
+        for sig in signatures:
+            sig_line = f"  {sig}"
+            sig_tokens = count_tokens(sig_line)
+            if budget <= 0:
+                break
+            lines.append(sig_line)
+            budget -= sig_tokens
+            included += 1
+
+        suffix = f"\n({included} of {len(signatures)} signatures, token budget: {max_tokens})"
+        return "\n".join(lines) + suffix
 
     def classify_entities(self, language: str = "") -> dict[str, list[str]]:
         """Classify source files into entity types (controller, service, etc.).
