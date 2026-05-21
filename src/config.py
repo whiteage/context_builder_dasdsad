@@ -51,6 +51,9 @@ DEFAULT_EXCLUDE = [
     "*private-key*",
     "**/secrets/**",
     "**/Secrets/**",
+    ".ai-context.db",
+    ".ai-context.db-journal",
+    ".ai-context.db-wal",
 ]
 
 DEFAULT_CONFIG: dict[str, Any] = {
@@ -58,17 +61,13 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "indexing": {"exclude": DEFAULT_EXCLUDE},
     "context": {
         "max_tokens": 120000,
-        "agent_token_budget": 30000,
-        "max_steps": 12,
+        "agent_token_budget": 50000,
+        "max_steps": 25,
         "include_tests": True,
         "include_docs": True,
     },
     "similarity": {"enabled": True},
     "vector_search": {"enabled": False},
-    "model": {
-        "provider": "deepseek",
-        "name": "deepseek-chat"
-    }
 }
 
 PROJECT_MARKERS = {
@@ -140,14 +139,14 @@ class Config:
     architecture_auto_detect: bool = True
     index_exclude: list[str] = field(default_factory=lambda: DEFAULT_EXCLUDE.copy())
     max_tokens: int = 120000
-    agent_token_budget: int = 30000
-    max_steps: int = 12
+    agent_token_budget: int = 50000
+    max_steps: int = 25
     include_tests: bool = True
     include_docs: bool = True
     similarity_enabled: bool = True
     vector_search_enabled: bool = False
-    model_provider: str = "deepseek"
-    model_name: str = "deepseek-chat"
+    model_provider: str = field(default_factory=lambda: os.environ.get("CTX_BUILDER_DEFAULT_PROVIDER", "deepseek"))
+    model_name: str = field(default_factory=lambda: os.environ.get("CTX_BUILDER_DEFAULT_MODEL", "deepseek-chat"))
 
     project_types: list[ProjectType] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -189,7 +188,7 @@ def load_config(
     merged.update({"context": DEFAULT_CONFIG["context"].copy()})
     merged.update({"similarity": DEFAULT_CONFIG["similarity"].copy()})
     merged.update({"vector_search": DEFAULT_CONFIG["vector_search"].copy()})
-    merged.update({"model": DEFAULT_CONFIG["model"].copy()})
+    merged.update({"model": {}})  # Will be filled by user config or env vars
 
     # Load user config
     if config_path:
@@ -207,15 +206,15 @@ def load_config(
     config.architecture_auto_detect = merged["architecture"].get("auto_detect", True)
     config.index_exclude = merged["indexing"].get("exclude", DEFAULT_EXCLUDE)
     config.max_tokens = merged["context"].get("max_tokens", 120000)
-    config.agent_token_budget = merged["context"].get("agent_token_budget", 30000)
-    config.max_steps = merged["context"].get("max_steps", 12)
+    config.agent_token_budget = merged["context"].get("agent_token_budget", 50000)
+    config.max_steps = merged["context"].get("max_steps", 25)
     config.include_tests = merged["context"].get("include_tests", True)
     config.include_docs = merged["context"].get("include_docs", True)
     config.similarity_enabled = merged["similarity"].get("enabled", True)
     config.vector_search_enabled = merged["vector_search"].get("enabled", False)
     config.raw = merged
-    config.model_provider = merged["model"].get("provider", "deepseek")
-    config.model_name = merged["model"].get("name", "deepseek-chat")
+    config.model_provider = merged["model"].get("provider") or os.environ.get("CTX_BUILDER_DEFAULT_PROVIDER") or "deepseek"
+    config.model_name = merged["model"].get("name") or os.environ.get("CTX_BUILDER_DEFAULT_MODEL") or "deepseek-chat"
     # Detect project types
     config.project_types = _detect_project_types(project_path)
 

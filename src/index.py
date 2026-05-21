@@ -932,8 +932,12 @@ class ProjectIndex:
         lines.append(f"Methods: {self.ast.total_methods}")
         lines.append(f"Dependency edges: {sum(len(v) for v in self.deps.dependencies.values())}")
         lines.append("")
+        tree = RepoScanner.print_tree(self.repo.file_tree, max_depth=2)
+        max_tree_chars = 3000
+        if len(tree) > max_tree_chars:
+            tree = tree[:max_tree_chars] + f"\n... (tree truncated, {len(tree)} chars total)"
         lines.append("Structure:")
-        lines.append(RepoScanner.print_tree(self.repo.file_tree, max_depth=3))
+        lines.append(tree)
         return "\n".join(lines)
 
     @classmethod
@@ -962,19 +966,24 @@ class ProjectIndex:
             for rel_path, entry in files.items():
                 _add_to_tree_static(root, rel_path, entry)
             by_lang, by_type = _group_files(files)
+            dir_mtimes_row = db.execute(
+                "SELECT value FROM meta WHERE key='dir_mtimes'"
+            ).fetchone()
+            dir_mtimes = json.loads(dir_mtimes_row[0]) if dir_mtimes_row else {}
             repo = RepoIndex(
                 project_path=project_path, files=files, file_tree=root,
                 file_count=len(files), files_by_language=by_lang, files_by_type=by_type,
+                dir_mtimes=dir_mtimes,
             )
 
             # methods (before classes)
             from src.parsers.base import MethodDecl, Parameter
             methods_by_cls: dict[tuple[str, str], list[MethodDecl]] = {}
             for r in db.execute("SELECT * FROM methods"):
-                params = [Parameter(**p) for p in json.loads(r[5])]
+                params = [Parameter(**p) for p in json.loads(r[4])]
                 methods_by_cls.setdefault((r[0], r[1]), []).append(
                     MethodDecl(name=r[2], return_type=r[3], parameters=params,
-                               modifiers=json.loads(r[6]), loc=r[7]),
+                               modifiers=json.loads(r[5]), loc=r[6]),
                 )
 
             # classes
@@ -985,9 +994,9 @@ class ProjectIndex:
                 if path not in fasts:
                     fasts[path] = FileAST(path=path, language=files[path].language)
                 fasts[path].classes.append(ClassDecl(
-                    name=name, class_type=r[3],
-                    base_types=json.loads(r[4]), interfaces=json.loads(r[5]),
-                    attributes=json.loads(r[6]), loc=r[7],
+                    name=name, class_type=r[2],
+                    base_types=json.loads(r[3]), interfaces=json.loads(r[4]),
+                    attributes=json.loads(r[5]), loc=r[6],
                     methods=methods_by_cls.get((path, name), []),
                 ))
 
@@ -1000,9 +1009,9 @@ class ProjectIndex:
                 if len(parts) != 2:
                     continue
                 cls_name, method_name = parts
-                for cls in fasts[path].classes:
-                    if cls.name == cls_name:
-                        for m in cls.methods:
+                for cdecl in fasts[path].classes:
+                    if cdecl.name == cls_name:
+                        for m in cdecl.methods:
                             if m.name == method_name and call not in m.calls:
                                 m.calls.append(call)
                         break
@@ -1021,7 +1030,7 @@ class ProjectIndex:
                 dents.setdefault(r[1], set()).add(r[0])
             dep_graph = DependencyGraph(dependencies=deps, dependents=dents)
 
-            return cls(repo=repo, ast=ast, deps=dep_graph)
+            return ProjectIndex(repo=repo, ast=ast, deps=dep_graph)
 
         except Exception:
             return None
@@ -1044,6 +1053,11 @@ class ProjectIndex:
 
         index = cls.build(config)
         index.save(db_path)
+        # Update root dir mtime — .ai-context.db creation changed it
+        try:
+            index.repo.dir_mtimes[""] = config.project_path.stat().st_mtime
+        except OSError:
+            pass
         return index
 
     @classmethod
@@ -1141,6 +1155,8 @@ class ProjectIndex:
 
         db.execute("INSERT INTO meta VALUES ('project_path', ?)", (self.repo.project_path,))
         db.execute("INSERT INTO meta VALUES ('scan_time', ?)", (str(time.time()),))
+        db.execute("INSERT INTO meta VALUES ('dir_mtimes', ?)",
+                   (json.dumps(self.repo.dir_mtimes),))
 
         db.executemany(
             "INSERT INTO files VALUES (?,?,?,?,?,?,?,?)",
@@ -1158,7 +1174,7 @@ class ProjectIndex:
                 )
                 for m in cls.methods:
                     params = json.dumps([{"name": p.name, "type": p.type,
-                                          "default": p.default_value} for p in m.parameters])
+                                          "default_value": p.default_value} for p in m.parameters])
                     db.execute(
                         "INSERT OR IGNORE INTO methods VALUES (?,?,?,?,?,?,?)",
                         (path, cls.name, m.name, m.return_type, params,

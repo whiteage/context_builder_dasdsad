@@ -42,6 +42,7 @@ class RepoIndex:
     file_count: int
     files_by_language: dict[str, list[str]]  # language → [paths]
     files_by_type: dict[str, list[str]]  # type → [paths]
+    dir_mtimes: dict[str, float] = field(default_factory=dict)  # rel_dir → mtime
 
 
 TEST_PATTERNS = [
@@ -124,11 +125,18 @@ class RepoScanner:
         project_path = self.config.project_path
         files: dict[str, FileEntry] = {}
         root = FolderNode(name=project_path.name, path="")
+        dir_mtimes: dict[str, float] = {}
 
         for dirpath, dirnames, filenames in os.walk(project_path):
             rel_dir = os.path.relpath(dirpath, project_path)
             if rel_dir == ".":
                 rel_dir = ""
+
+            # Record directory mtime for incremental scans
+            try:
+                dir_mtimes[rel_dir] = os.stat(dirpath).st_mtime
+            except OSError:
+                pass
 
             # Filter excluded directories
             dirnames[:] = [
@@ -168,11 +176,20 @@ class RepoScanner:
             file_count=len(files),
             files_by_language=by_language,
             files_by_type=by_type,
+            dir_mtimes=dir_mtimes,
         )
 
     def incremental_scan(self, existing: RepoIndex) -> tuple[list[str], list[str], RepoIndex]:
-        """Scan and return (new_files, modified_files, updated_index)."""
-        new_index = self.scan()
+        """Scan and return (new_files, modified_files, updated_index).
+
+        Uses directory mtimes to skip unchanged subtrees. Falls back to full
+        scan when dir_mtimes cache is empty (first run after upgrade).
+        """
+        if not existing.dir_mtimes:
+            new_index = self.scan()
+        else:
+            new_index = self._quick_scan(existing)
+
         new_files: list[str] = []
         modified: list[str] = []
 
@@ -183,6 +200,80 @@ class RepoScanner:
                 modified.append(path)
 
         return new_files, modified, new_index
+
+    def _quick_scan(self, existing: RepoIndex) -> RepoIndex:
+        """Fast scan: walk directory tree but skip subtrees whose mtime hasn't changed."""
+        project_path = self.config.project_path
+        files: dict[str, FileEntry] = {}
+        root = FolderNode(name=project_path.name, path="")
+        dir_mtimes: dict[str, float] = {}
+        cached_mtimes = existing.dir_mtimes
+
+        # Build recursive subtree index: rel_dir -> [(path, entry), ...]
+        # One pass over existing.files, then O(1) lookup per unchanged directory
+        subtree_files: dict[str, list[tuple[str, FileEntry]]] = {}
+        for path, entry in existing.files.items():
+            parts = path.split("/")
+            for i in range(len(parts)):
+                prefix = "/".join(parts[:i])
+                subtree_files.setdefault(prefix, []).append((path, entry))
+
+        for dirpath, dirnames, filenames in os.walk(project_path):
+            rel_dir = os.path.relpath(dirpath, project_path)
+            if rel_dir == ".":
+                rel_dir = ""
+
+            try:
+                current_mtime = os.stat(dirpath).st_mtime
+                dir_mtimes[rel_dir] = current_mtime
+            except OSError:
+                current_mtime = None
+
+            dirnames[:] = [
+                d for d in dirnames
+                if not self._is_excluded(os.path.join(rel_dir, d).replace("\\", "/") + "/")
+            ]
+
+            cached_mtime = cached_mtimes.get(rel_dir)
+            if cached_mtime is not None and current_mtime is not None and current_mtime == cached_mtime:
+                for path, entry in subtree_files.get(rel_dir, []):
+                    files[path] = entry
+                dirnames.clear()
+                continue
+
+            # Changed or new — scan files
+            for filename in filenames:
+                rel_path = os.path.join(rel_dir, filename).replace("\\", "/")
+                if self._is_excluded(rel_path):
+                    continue
+                full_path = os.path.join(dirpath, filename)
+                try:
+                    stat = os.stat(full_path)
+                except OSError:
+                    continue
+                entry = self._classify_file(rel_path, filename, stat)
+                files[rel_path] = entry
+
+        # Build file tree
+        for rel_path, entry in files.items():
+            self._add_to_tree(root, rel_path, entry)
+
+        # Group by language and type
+        by_language: dict[str, list[str]] = {}
+        by_type: dict[str, list[str]] = {}
+        for rel_path, entry in files.items():
+            by_language.setdefault(entry.language, []).append(rel_path)
+            by_type.setdefault(entry.file_type, []).append(rel_path)
+
+        return RepoIndex(
+            project_path=str(project_path),
+            files=files,
+            file_tree=root,
+            file_count=len(files),
+            files_by_language=by_language,
+            files_by_type=by_type,
+            dir_mtimes=dir_mtimes,
+        )
 
     def _is_excluded(self, rel_path: str) -> bool:
         for pattern in self._exclude_patterns:
@@ -267,7 +358,7 @@ class RepoScanner:
                 lines.append(f"{prefix}{node.name}/")
             for child in sorted(node.children, key=lambda c: c.name):
                 lines.append(RepoScanner.print_tree(child, indent + 1, max_depth))
-            for f in sorted(node.files, key=lambda f: f.path)[:10]:  # limit files per folder
+            for f in sorted(node.files, key=lambda f: f.path)[:5]:  # limit files per folder
                 lines.append(f"{prefix}  {Path(f.path).name}")
             if len(node.files) > 10:
                 lines.append(f"{prefix}  ... ({len(node.files) - 10} more files)")

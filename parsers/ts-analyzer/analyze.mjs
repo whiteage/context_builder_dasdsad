@@ -96,7 +96,7 @@ function extractFile(sourceFile, filePath, basePath) {
         }
     }
 
-    // Walk the AST for classes, interfaces, functions
+    // Walk the AST for classes, interfaces, functions, and variable exports
     function walk(node) {
         if (ts.isClassDeclaration(node) && node.name) {
             info.classes.push(extractClass(node, sourceFile));
@@ -105,10 +105,17 @@ function extractFile(sourceFile, filePath, basePath) {
             info.classes.push(extractInterface(node));
         }
         if (ts.isFunctionDeclaration(node) && node.name) {
-            // Only top-level functions (not inside classes)
             if (node.parent === sourceFile || ts.isSourceFile(node.parent) || ts.isModuleBlock(node.parent)) {
                 info.functions.push(extractFunction(node));
             }
+        }
+        // Variable declarations: export const foo = () => {}, export const bar = { ... }, etc.
+        if (ts.isVariableStatement(node)) {
+            extractVariableExports(node, info);
+        }
+        // Export default: export default function/class/expression
+        if (ts.isExportAssignment(node)) {
+            extractDefaultExport(node, info);
         }
         ts.forEachChild(node, walk);
     }
@@ -303,6 +310,151 @@ function getPropertyName(name) {
 function countLines(node, sourceFile) {
     const text = node.getText(sourceFile);
     return (text.match(/\n/g) || []).length + 1;
+}
+
+// ── Variable & Default export extraction ────────────────────
+
+function extractVariableExports(node, info) {
+    // Check if the variable statement is exported
+    const isExported = node.modifiers && node.modifiers.some(
+        m => m.kind === ts.SyntaxKind.ExportKeyword
+    );
+
+    for (const decl of node.declarationList.declarations) {
+        if (!decl.name || !ts.isIdentifier(decl.name)) continue;
+
+        const varName = decl.name.text;
+
+        // Arrow function: export const foo = () => {}
+        if (decl.initializer && ts.isArrowFunction(decl.initializer)) {
+            info.functions.push({
+                name: varName,
+                return_type: decl.initializer.type ? decl.initializer.type.getText() : null,
+                parameters: extractParameters(decl.initializer.parameters),
+                kind: 'arrow'
+            });
+            continue;
+        }
+
+        // Function expression: export const foo = function() {}
+        if (decl.initializer && ts.isFunctionExpression(decl.initializer)) {
+            info.functions.push({
+                name: varName,
+                return_type: decl.initializer.type ? decl.initializer.type.getText() : null,
+                parameters: extractParameters(decl.initializer.parameters),
+                kind: 'function_expr'
+            });
+            continue;
+        }
+
+        // Object literal with callable methods: export const foo = { bar() {}, baz() {} }
+        if (decl.initializer && ts.isObjectLiteralExpression(decl.initializer)) {
+            const obj = { name: varName, type: 'object', methods: [], properties: [] };
+            for (const prop of decl.initializer.properties) {
+                if (ts.isMethodDeclaration(prop) && prop.name) {
+                    obj.methods.push({
+                        name: getPropertyName(prop.name),
+                        return_type: prop.type ? prop.type.getText() : null,
+                        parameters: extractParameters(prop.parameters),
+                        modifiers: [],
+                        attributes: [],
+                        loc: 0
+                    });
+                } else if (ts.isPropertyAssignment(prop) && prop.name) {
+                    const propType = prop.initializer
+                        ? (ts.isArrowFunction(prop.initializer) || ts.isFunctionExpression(prop.initializer)
+                            ? 'function' : typeof prop.initializer.kind)
+                        : null;
+                    obj.properties.push({
+                        name: getPropertyName(prop.name),
+                        type: propType,
+                        modifiers: isExported ? ['export'] : [],
+                        attributes: []
+                    });
+                }
+            }
+            info.classes.push(obj);
+            continue;
+        }
+
+        // Other exported const: capture as a simple property if exported
+        if (isExported && decl.initializer) {
+            info.functions.push({
+                name: varName,
+                return_type: decl.type ? decl.type.getText() : null,
+                parameters: [],
+                kind: 'const_export'
+            });
+        }
+    }
+}
+
+function extractDefaultExport(node, info) {
+    const expr = node.expression;
+
+    // export default function() {}
+    if (ts.isFunctionExpression(expr) || ts.isArrowFunction(expr)) {
+        info.functions.push({
+            name: 'default',
+            return_type: expr.type ? expr.type.getText() : null,
+            parameters: extractParameters(expr.parameters),
+            kind: 'default_export_func'
+        });
+        return;
+    }
+
+    // export default class { ... }
+    if (ts.isClassExpression(expr)) {
+        info.classes.push({
+            name: 'default',
+            type: 'class',
+            extends: [],
+            implements: [],
+            decorators: [],
+            methods: [],
+            constructors: [],
+            properties: [],
+            loc: 0
+        });
+        return;
+    }
+
+    // export default { ... } — object literal
+    if (ts.isObjectLiteralExpression(expr)) {
+        const obj = { name: 'default', type: 'object', methods: [], properties: [] };
+        for (const prop of expr.properties) {
+            if (ts.isMethodDeclaration(prop) && prop.name) {
+                obj.methods.push({
+                    name: getPropertyName(prop.name),
+                    return_type: prop.type ? prop.type.getText() : null,
+                    parameters: extractParameters(prop.parameters),
+                    modifiers: [],
+                    attributes: [],
+                    loc: 0
+                });
+            } else if (ts.isShorthandPropertyAssignment(prop)) {
+                obj.properties.push({
+                    name: prop.name.text,
+                    type: 'shorthand',
+                    modifiers: [],
+                    attributes: []
+                });
+            }
+        }
+        info.classes.push(obj);
+        return;
+    }
+
+    // export default callExpression (e.g. export default defineConfig({...}))
+    if (ts.isCallExpression(expr)) {
+        const callName = expr.expression.getText();
+        info.functions.push({
+            name: `default_${callName}`,
+            return_type: null,
+            parameters: [],
+            kind: 'default_export_call'
+        });
+    }
 }
 
 // ── Helpers ─────────────────────────────────────────────────

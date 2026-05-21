@@ -15,8 +15,6 @@ Connect Claude Code to this server by adding to .claude/settings.json:
 
 from __future__ import annotations
 
-import json
-import os
 import sys
 from pathlib import Path
 
@@ -33,11 +31,6 @@ from src.index import ProjectIndex, count_tokens
 from src.tools import create_tools
 
 server = Server("ctx-builder")
-
-
-def _build_index(project_path: str) -> ProjectIndex:
-    config = load_config(project_path)
-    return ProjectIndex.load_or_build(config)
 
 
 @server.list_tools()
@@ -73,70 +66,6 @@ async def list_tools() -> list[Tool]:
             },
         ),
         Tool(
-            name="ctx_summary",
-            description="Get a quick summary of a project: file counts, languages, structure tree, detected project types. No LLM call — instant.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project": {
-                        "type": "string",
-                        "description": "Path to project directory.",
-                    },
-                },
-                "required": ["project"],
-            },
-        ),
-        Tool(
-            name="ctx_search",
-            description="Search for a class, method, or symbol in an indexed project. Returns matching symbols with their file paths and signatures.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project": {
-                        "type": "string",
-                        "description": "Path to project directory.",
-                    },
-                    "symbol": {
-                        "type": "string",
-                        "description": "Symbol name to search for (case-insensitive partial match).",
-                    },
-                },
-                "required": ["project", "symbol"],
-            },
-        ),
-        Tool(
-            name="ctx_dependencies",
-            description="Get file dependencies: what a file imports and what imports it.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project": {
-                        "type": "string",
-                        "description": "Path to project directory.",
-                    },
-                    "file": {
-                        "type": "string",
-                        "description": "File path relative to project root.",
-                    },
-                },
-                "required": ["project", "file"],
-            },
-        ),
-        Tool(
-            name="ctx_entities",
-            description="Classify all source files by entity type: controllers, services, repositories, DTOs, entities, etc.",
-            inputSchema={
-                "type": "object",
-                "properties": {
-                    "project": {
-                        "type": "string",
-                        "description": "Path to project directory.",
-                    },
-                },
-                "required": ["project"],
-            },
-        ),
-        Tool(
             name="ctx_gitlab_mr",
             description="Fetch a GitLab merge request and build a context task for code review. Requires GITLAB_TOKEN env var.",
             inputSchema={
@@ -167,14 +96,6 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
     try:
         if name == "ctx_build":
             return await _handle_build(arguments)
-        elif name == "ctx_summary":
-            return await _handle_summary(arguments)
-        elif name == "ctx_search":
-            return await _handle_search(arguments)
-        elif name == "ctx_dependencies":
-            return await _handle_deps(arguments)
-        elif name == "ctx_entities":
-            return await _handle_entities(arguments)
         elif name == "ctx_gitlab_mr":
             return await _handle_gitlab_mr(arguments)
         else:
@@ -203,9 +124,6 @@ async def _handle_build(args: dict) -> list[TextContent]:
     # Build index
     index = ProjectIndex.load_or_build(config)
 
-    # For summary/search/deps/entities, we don't need the LLM — we can return structured data directly
-    # For ctx_build, we need the full agent with LLM
-
     # Create model
     from src.cli import create_model
     from src.agent import CtxBuilderAgent
@@ -222,98 +140,24 @@ async def _handle_build(args: dict) -> list[TextContent]:
 
     tokens = count_tokens(result)
 
+    # Debug: show what tools gatherer actually called
+    tools_called = getattr(agent, 'last_tools', [])
+    has_code = getattr(agent, 'last_has_code', False)
+    tool_sizes = getattr(agent, 'last_tool_bytes', {})
+    debug_line = f"[DEBUG] Tools: {', '.join(tools_called)} | Has code: {has_code}"
+    if tool_sizes:
+        debug_line += " | " + " ".join(f"{k}={v}B" for k, v in tool_sizes.items())
+
     header = (
         f"Project: {project_path.name}\n"
         f"Detected: {detected}\n"
         f"Provider: {provider}, Model: {model}\n"
         f"Task: {task}\n"
-        f"Output: ~{tokens} tokens\n\n"
+        f"Output: ~{tokens} tokens\n"
+        f"{debug_line}\n\n"
     )
 
     return [TextContent(type="text", text=header + result)]
-
-
-async def _handle_summary(args: dict) -> list[TextContent]:
-    project_path = _resolve_path(args["project"])
-    if isinstance(project_path, str):
-        return [TextContent(type="text", text=project_path)]
-
-    config = load_config(str(project_path))
-    index = ProjectIndex.load_or_build(config)
-    return [TextContent(type="text", text=index.summarize())]
-
-
-async def _handle_search(args: dict) -> list[TextContent]:
-    project_path = _resolve_path(args["project"])
-    if isinstance(project_path, str):
-        return [TextContent(type="text", text=project_path)]
-
-    config = load_config(str(project_path))
-    index = ProjectIndex.load_or_build(config)
-
-    symbol = args["symbol"]
-    results = index.find_symbols(name=symbol)
-
-    if not results:
-        return [TextContent(type="text", text=f"No symbols found matching '{symbol}'")]
-
-    lines = [f"Found {len(results)} matching '{symbol}':"]
-    for r in results[:30]:
-        if r["type"] == "method":
-            params = ", ".join(f"{p.type} {p.name}" for p in r["parameters"])
-            lines.append(f"  [{r['type']}] {r['class_name']}.{r['name']}({params}) in {r['path']}")
-        elif r["type"] == "function":
-            params = ", ".join(f"{p.type} {p.name}" for p in r["parameters"])
-            lines.append(f"  [{r['type']}] {r['name']}({params}) in {r['path']}")
-        else:
-            lines.append(f"  [{r['type']}] {r['name']} in {r['path']}")
-            for m in r.get("methods", [])[:3]:
-                params = ", ".join(f"{p.type} {p.name}" for p in m.parameters)
-                lines.append(f"    {m.return_type or 'void'} {m.name}({params})")
-    if len(results) > 30:
-        lines.append(f"  ... ({len(results) - 30} more)")
-    return [TextContent(type="text", text="\n".join(lines))]
-
-
-async def _handle_deps(args: dict) -> list[TextContent]:
-    project_path = _resolve_path(args["project"])
-    if isinstance(project_path, str):
-        return [TextContent(type="text", text=project_path)]
-
-    config = load_config(str(project_path))
-    index = ProjectIndex.load_or_build(config)
-
-    file_path = args["file"]
-    if file_path not in index.repo.files:
-        return [TextContent(type="text", text=f"File not found: {file_path}")]
-
-    deps = index.get_dependencies(file_path)
-    dents = index.get_dependents(file_path)
-
-    lines = [f"Dependencies for: {file_path}"]
-    lines.append(f"  Imports ({len(deps)}):")
-    for d in deps[:20]:
-        lines.append(f"    {d}")
-    lines.append(f"  Imported by ({len(dents)}):")
-    for d in dents[:20]:
-        lines.append(f"    {d}")
-    return [TextContent(type="text", text="\n".join(lines))]
-
-
-async def _handle_entities(args: dict) -> list[TextContent]:
-    project_path = _resolve_path(args["project"])
-    if isinstance(project_path, str):
-        return [TextContent(type="text", text=project_path)]
-
-    config = load_config(str(project_path))
-    index = ProjectIndex.load_or_build(config)
-
-    result = index.classify_entities()
-    lines = [f"Entity classification ({sum(len(v) for v in result.values())} files):"]
-    for etype, files in sorted(result.items()):
-        if files:
-            lines.append(f"  {etype}: {len(files)} files — {', '.join(Path(f).name for f in files[:5])}")
-    return [TextContent(type="text", text="\n".join(lines))]
 
 
 async def _handle_gitlab_mr(args: dict) -> list[TextContent]:
@@ -326,16 +170,6 @@ async def _handle_gitlab_mr(args: dict) -> list[TextContent]:
     client = GitLabClient(gitlab_url)
     task = client.build_mr_context(project_id, mr_iid)
     return [TextContent(type="text", text=task)]
-
-
-def _resolve_path(project: str) -> Path | str:
-    p = Path(project)
-    if not p.is_absolute():
-        p = _project_root / p
-    p = p.resolve()
-    if not p.is_dir():
-        return f"Project not found: {p}"
-    return p
 
 
 def main():

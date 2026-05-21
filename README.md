@@ -1,31 +1,32 @@
 # ctx-builder — Context Builder Agent
 
-AI-агент для автоматического сбора и формирования релевантного контекста проекта для AI-систем.
+AI-агент для автоматического сбора и формирования релевантного контекста проекта для AI-систем (Claude Code, OpenAI Codex, локальные LLM).
 
-**Задача:** дать AI ровно тот контекст, который нужен для конкретной задачи — не больше, не меньше.
+**Главная задача:** дать AI ровно тот контекст, который нужен для конкретной задачи — не больше, не меньше.
 
 ## Возможности
 
-- **Code Review** — архитектурный контекст, связанные классы, project rules
-- **Code Generation** — похожие реализации, conventions, patterns
-- **Refactoring** — зависимости, call graph, impacted modules
-- **Bug Fixing** — stacktrace context, execution chain, related services
-- **Documentation** — module descriptions, architecture structure, API contracts
-- **Architecture Analysis** — слои, модули, паттерны, связи
+| Use Case | Что собирает |
+|----------|-------------|
+| **Code Review** | Архитектурный контекст, связанные классы, project rules |
+| **Code Generation** | Похожие реализации, conventions, patterns, примеры кода |
+| **Refactoring** | Зависимости, call graph, затронутые модули |
+| **Bug Fixing** | Контекст stacktrace, цепочка вызовов, связанные сервисы |
+| **Documentation** | Описания модулей, структура архитектуры, API контракты |
+| **Architecture Analysis** | Слои, модули, паттерны, связи между компонентами |
 
 ## Поддерживаемые технологии
 
-| Стек | Парсер | Метод |
-|------|--------|-------|
-| ASP.NET Core | C# | Roslyn (subprocess) + regex fallback |
-| Laravel | PHP | PHP Parser (subprocess) + regex fallback |
-| Node.js / TypeScript | TS | TypeScript Compiler API (subprocess) + regex fallback |
-| Vue.js | TS/Vue | TS Compiler API + regex fallback |
-| Flutter | Dart | Dart Analyzer (subprocess) + regex fallback |
-| Unity | C# | Roslyn + .meta analysis + regex fallback |
-| Unreal Engine | C++ | tree-sitter AST + regex fallback |
+| Стек | Язык | Парсер | Охват |
+|------|------|--------|-------|
+| ASP.NET Core | C# | Roslyn AST | ~100% |
+| Unity | C# | Roslyn + .meta analysis | ~97% |
+| Laravel | PHP | PHP Parser | ~85% |
+| Flutter | Dart | Dart Analyzer | ~87% |
+| Node.js / TypeScript | TS/Vue | TS Compiler API + regex | ~20% |
+| Unreal Engine | C++ | tree-sitter AST | ~49% |
 
-Без парсера (Rust, Go, Python и др.) — агент работает через прямое чтение файлов.
+Для языков без парсера (Rust, Go, Python) агент работает через прямое чтение файлов через `read_file`/`compact_file`.
 
 ## Установка
 
@@ -35,14 +36,48 @@ cd ctx-builder
 pip install -e .
 ```
 
-Зависимости:
+## Настройка
+
+### 1. API ключи
+
+Скопируйте шаблон и заполните хотя бы один ключ:
+
+```bash
+cp .env.example .env
+# Отредактируйте .env — вставьте свой API ключ
 ```
-click>=8.1, tiktoken>=0.7, pyyaml>=6.0
-langgraph>=1.2, langchain-core>=1.4
-langchain-openai>=1.2, langchain-anthropic>=1.2
-openai>=2.37, python-dotenv>=1.0
-tree-sitter>=0.22, tree-sitter-cpp>=0.23
-mcp>=1.0 (для Claude Code интеграции)
+
+Минимально нужен один ключ. Рекомендуется DeepSeek (`DEEPSEEK_API_KEY`) — лучший баланс цены и качества.
+
+### 2. Выбор модели по умолчанию
+
+Модель можно задать тремя способами (в порядке приоритета):
+
+**Способ 1 — `.ai-context.yml` (на конкретный проект):**
+```yaml
+model:
+  provider: openai
+  name: gpt-4o
+```
+
+**Способ 2 — переменные окружения (глобально):**
+```bash
+# В .env или экспортом
+CTX_BUILDER_DEFAULT_PROVIDER=deepseek
+CTX_BUILDER_DEFAULT_MODEL=deepseek-v4-flash
+```
+
+**Способ 3 — флаг CLI (на один запуск):**
+```bash
+ctx-build -p . -t "Code Review" --provider anthropic --model claude-haiku-4-5-20251001
+```
+
+Если ничего не указано — используется `deepseek/deepseek-chat`.
+
+### 3. Проверка установки
+
+```bash
+ctx-build -p . -t "test"
 ```
 
 ## Быстрый старт
@@ -52,14 +87,9 @@ mcp>=1.0 (для Claude Code интеграции)
 ctx-build -p /path/to/project -t "Code Review: Analyze architecture"
 
 # Выбор модели
-ctx-build -p . -t "Refactoring: Extract auth module" \
-  --provider openai --model gpt-4o
-
-ctx-build -p . -t "Bug Fixing: NullPointer in UserService" \
-  --provider anthropic --model claude-opus-4-7
-
-ctx-build -p . -t "Code Generation: Add email verification" \
-  --provider deepseek --model deepseek-chat
+ctx-build -p . -t "Refactoring: Extract auth module" --provider openai --model gpt-4o
+ctx-build -p . -t "Bug Fixing: NullPointer in UserService" --provider anthropic --model claude-opus-4-7
+ctx-build -p . -t "Code Generation: Add email verification" --provider deepseek --model deepseek-v4-pro
 
 # Локальная модель (Ollama, LM Studio, vLLM)
 export LOCAL_LLM_URL=http://localhost:11434/v1
@@ -71,27 +101,31 @@ ctx-build -p . -t "Documentation: API overview" -o docs/context.md
 
 ## Провайдеры LLM
 
-| Провайдер | Флаг | Переменные окружения |
-|-----------|------|---------------------|
-| OpenAI | `--provider openai` | `OPENAI_API_KEY` |
-| Anthropic | `--provider anthropic` | `ANTHROPIC_API_KEY` |
-| DeepSeek | `--provider deepseek` | `DEEPSEEK_API_KEY` |
-| Локальный | `--provider local` | `LOCAL_LLM_URL`, `LOCAL_LLM_API_KEY` |
+| Провайдер | Флаг | Модели | Переменная |
+|-----------|------|--------|-----------|
+| OpenAI | `--provider openai` | gpt-4o, gpt-4-turbo | `OPENAI_API_KEY` |
+| Anthropic | `--provider anthropic` | claude-opus-4-7, claude-sonnet-4-6 | `ANTHROPIC_API_KEY` |
+| DeepSeek | `--provider deepseek` | deepseek-chat, deepseek-v4-pro | `DEEPSEEK_API_KEY` |
+| Локальный | `--provider local` | Любая OpenAI-совместимая | `LOCAL_LLM_URL` |
+
+**Рекомендация:** deepseek-v4-pro — лучший баланс качества и скорости. Лучше следует инструкциям, не выдумывает код, использует реальные данные из тулзов.
 
 ## Формат вывода — 8 секций
 
 ```
-1. PROJECT SUMMARY      — что за проект, стек, масштаб
-2. ARCHITECTURE         — тип, слои, карта слоёв
-3. RELATED FILES        — ключевые файлы с путём и релевантностью
-4. DEPENDENCY GRAPH     — файловые, модульные, call-зависимости
-5. CONVENTIONS          — naming, patterns, style
-6. SIMILAR IMPLEMENTATIONS — классы с теми же паттернами
-7. TASK CONTEXT         — что смотреть, ключевые файлы, опасности
-8. RELEVANT CODE SNIPPETS  — 3-5 сниппетов с пояснениями
+1. PROJECT SUMMARY      — стек, размер, тип проекта (2-4 предложения)
+2. ARCHITECTURE         — паттерн (Layered/DDD/ECS/Modular Monolith), слои, ответственности
+3. RELATED FILES        — 5-8 файлов с путём, типом, назначением, релевантностью
+4. DEPENDENCY GRAPH     — импорты/импортируется, граф вызовов (из get_dependencies)
+5. CONVENTIONS          — naming rules, patterns, code style (project-specific)
+6. SIMILAR IMPLEMENTATIONS — 3-4 класса/файла с теми же паттернами
+7. TASK CONTEXT         — что трогать, чему следовать, чего избегать
+8. RELEVANT CODE SNIPPETS  — 3-5 сниппетов из read_file/compact_file (только реальный код)
 ```
 
-## Конфигурация — .ai-context.yml
+## Конфигурация — `.ai-context.yml`
+
+Создайте `.ai-context.yml` в корне целевого проекта:
 
 ```yaml
 architecture:
@@ -105,7 +139,9 @@ indexing:
     - "*.generated.*"
 
 context:
-  max_tokens: 120000
+  max_tokens: 120000          # лимит выходного документа
+  agent_token_budget: 50000   # бюджет gatherer'а на чтение тулзов
+  max_steps: 25               # макс. итераций gatherer'а
   include_tests: true
   include_docs: true
 
@@ -114,45 +150,51 @@ similarity:
 
 model:
   provider: deepseek
-  name: deepseek-chat
+  name: deepseek-v4-pro
 ```
+
+Если `.ai-context.yml` отсутствует — используются значения по умолчанию (те же, что в примере).
 
 ## Claude Code интеграция
 
-### MCP Server (автоматически)
-claude mcp add --scope user --transport stdio ctx-builder -- "C:\Users\wh1te\PycharmProjects\PythonProject10\.venv\Scripts\python.exe" -m
-  src.mcp_server
+### MCP Server
 
-В `.claude/settings.local.json`:
+Подключение в `.claude/settings.local.json`:
+
 ```json
 {
   "mcpServers": {
     "ctx-builder": {
       "command": "python",
       "args": ["-m", "src.mcp_server"],
-      "cwd": "/path/to/ctx-builder"
+      "cwd": "/path/to/ctx-builder",
+      "env": {
+        "DEEPSEEK_API_KEY": "sk-your-key-here",
+        "CTX_BUILDER_DEFAULT_PROVIDER": "deepseek",
+        "CTX_BUILDER_DEFAULT_MODEL": "deepseek-v4-flash"
+      }
     }
   }
 }
 ```
 
-После перезапуска Claude Code доступны 6 тулов:
+**Важно:** `command` должен указывать на python с установленными зависимостями (виртуальное окружение или системный python).  
+**env** — опционально. Если не указан, ключи берутся из `.env` в корне проекта.
+
+**Доступные инструменты (2):**
 
 | MCP Tool | Назначение | LLM |
 |----------|-----------|-----|
-| `ctx_summary` | Быстрая сводка проекта | Нет |
-| `ctx_search` | Поиск класса/метода | Нет |
-| `ctx_dependencies` | Зависимости файла | Нет |
-| `ctx_entities` | Классификация сущностей | Нет |
 | `ctx_build` | Полный AI-контекст (8 секций) | Да |
-| `ctx_gitlab_mr` | Анализ GitLab MR | Да |
+| `ctx_gitlab_mr` | Контекст из GitLab Merge Request | Нет |
+
+Внутренние тулзы gatherer'а (15 штук: `get_summary`, `search_symbol`, `get_dependencies`, `compact_file`, `read_file`, `classify_entities`, `sample_signatures`, `find_similar`, `rank_files`, `get_docs`, `get_module_graph`, `get_call_graph`, `find_files`, `list_files`, `get_token_budget`) используются внутри `ctx_build` и не экспортируются как отдельные MCP-эндпоинты.
 
 ### Slash-команда
 
 ```
 /ctx-build
 ```
-Вызывает skill из `.claude/skills/ctx-build.md`.
 
 ## GitLab интеграция
 
@@ -160,99 +202,83 @@ claude mcp add --scope user --transport stdio ctx-builder -- "C:\Users\wh1te\Pyc
 # Анализ Merge Request
 ctx-build -p . --gitlab-mr 123:5
 
-# Указание своего GitLab инстанса
+# Свой GitLab инстанс
 ctx-build -p . --gitlab-mr 123:5 --gitlab-url https://gitlab.example.com
 ```
 
 Требуется: `GITLAB_TOKEN=glpat-xxxx` в переменных окружения.
 
-Python API:
-```python
-from src.gitlab import GitLabClient
-
-client = GitLabClient("https://gitlab.com")
-projects = client.list_projects(search="my-project")
-mr_context = client.build_mr_context(project_id=123, mr_iid=5)
-```
-
-## Архитектура проекта
+## Архитектура
 
 ```
-┌──────────────────────────────────────────────────┐
-│  CLI (cli.py)          MCP Server (mcp_server.py) │
-├──────────────────────────────────────────────────┤
-│  Agent (agent.py)                                 │
-│  LangGraph StateGraph: agent_node ↔ tool_node     │
-├──────────────────────────────────────────────────┤
-│  Tools (tools.py)          Prompts (prompts/)     │
-│  14 тулов + mask_secrets   system.py              │
-├──────────────────────────────────────────────────┤
-│  Index (index.py)                                 │
-│  ProjectIndex, DependencyGraph, SQLite cache      │
-│  PageRank, entity classification, compact source  │
-├──────────────────┬───────────────────────────────┤
-│  Scanner          │  Parsers (parsers/)           │
-│  scanner.py       │  base.py → registry.py        │
-│  FileEntry,       │  csharp.py, php.py,           │
-│  RepoIndex,       │  typescript.py, dart.py,     │
-│  RepoScanner      │  cpp.py (tree-sitter),       │
-│                   │  unity.py                     │
-├──────────────────┴───────────────────────────────┤
-│  Config (config.py)     GitLab (gitlab.py)        │
-│  .ai-context.yml        GitLabClient, analyze MRs │
-└──────────────────────────────────────────────────┘
+CLI (cli.py)              MCP Server (mcp_server.py)
+         └────────────┬────────────┘
+                   Agent (agent.py)
+              Plan-and-Execute pattern
+         ┌─────────┴─────────┐
+    Gatherer              Writer
+ (agent + tools,      (LLM без тулзов,
+  сбор данных)         пишет документ)
+         │
+    Tools (tools.py)     Prompts (prompts/system.py)
+    15 тулзов +            gatherer/writer промпты
+    mask_secrets
+         │
+    Index (index.py)
+    ProjectIndex, DependencyGraph, SQLite cache
+    PageRank, entity classification, compact source
+         │
+    ┌────┴─────────────┐
+  Scanner           Parsers (parsers/)
+  scanner.py        csharp, php, typescript, dart, cpp, unity
+  RepoIndex,
+  RepoScanner
+         │
+    Config (config.py)    GitLab (gitlab.py)
+    .ai-context.yml       GitLabClient, MR анализ
 ```
 
-### Ключевые модули
+### Plan-and-Execute
 
-| Модуль | Строк | Назначение |
-|--------|-------|-----------|
-| `src/index.py` | 733 | ProjectIndex, DependencyGraph, SQLite, ranking, similarity |
-| `src/tools.py` | 415 | 14 MCP-тулов + mask_secrets |
-| `src/config.py` | 274 | Загрузка .ai-context.yml, детекция 7 типов проектов |
-| `src/scanner.py` | 274 | Обход файловой системы, классификация файлов |
-| `src/parsers/cpp.py` | 340 | Tree-sitter C++ парсер + regex fallback |
-| `src/parsers/csharp.py` | 258 | Roslyn subprocess + regex fallback |
-| `src/cli.py` | 92 | Click CLI, 4 провайдера, GitLab MR опция |
-| `src/agent.py` | 69 | LangGraph агент (agent + tools + router) |
-| `src/mcp_server.py` | 250 | MCP сервер (6 тулов, stdio JSON-RPC) |
-| `src/gitlab.py` | 160 | GitLab REST API клиент |
-| `src/prompts/system.py` | 122 | Системный промпт агента |
+Агент работает в два этапа:
 
-## Инструменты агента (14)
+1. **Gatherer** — агент с тулзами, только собирает данные (get_summary → search_symbol → get_dependencies → compact_file → read_file). Не пишет документ.
+2. **Writer** — одиночный LLM-вызов без тулзов. Получает собранные данные → формирует 8-секционный документ.
 
-| # | Инструмент | Назначение |
-|---|-----------|-----------|
-| 1 | `get_summary` | Сводка проекта (файлы, языки, дерево) |
-| 2 | `get_docs` | Поиск README, ARCHITECTURE, AI_RULES, ADR |
-| 3 | `list_files` | Список файлов в директории |
-| 4 | `read_file` | Чтение файла с номерами строк |
-| 5 | `compact_file` | Только сигнатуры, без тел и комментариев |
-| 6 | `search_symbol` | Поиск класса/метода по имени |
-| 7 | `find_files` | Фильтр по паттерну, языку, типу |
-| 8 | `get_dependencies` | Что импортирует файл и что импортирует его |
-| 9 | `get_call_graph` | Граф вызовов методов |
-| 10 | `get_module_graph` | Зависимости модулей верхнего уровня |
-| 11 | `classify_entities` | Классификация файлов по типу сущности |
-| 12 | `sample_signatures` | Случайная выборка сигнатур классов/методов |
-| 13 | `rank_files` | Ранжирование файлов по релевантности (PageRank) |
-| 14 | `find_similar` | Поиск похожих классов |
+Разделение решает проблему deepseek-chat: модель в режиме tool-calling залипает на вызовах тулзов и не переключается на написание документа.
+
+### Инкрементальное сканирование
+
+Повторный запуск на неизменённом проекте — **<0.5 секунд** (вместо 10-40с первого сканирования). Индекс кешируется в `.ai-context.db` (SQLite), а `_quick_scan` проверяет mtimes директорий и пропускает неизменённые поддеревья.
 
 ## Безопасность
 
-- `.env`, `.env.*`, `*.pem`, `*.key`, `*.pfx` — исключены из индексации
-- `*secret*`, `*credential*`, `*private_key*` — исключены
-- Маскирование в `read_file` и `compact_file`:
-  - API keys (`sk-...` → `***`)
-  - JWT tokens (`eyJ...` → `***JWT***`)
-  - Private keys (PEM блоки → `***PRIVATE KEY***`)
-  - Connection strings (`password=...` → `password=***`)
+- Секреты маскируются при чтении: API keys (`sk-...`), JWT токены, приватные ключи, connection strings
+- Исключены из индексации: `.env`, `.env.*`, `*.pem`, `*.key`, `*.pfx`, `*secret*`, `*credential*`, `*private_key*`
+- `.ai-context.db` исключён из сканирования
 
 ## SQLite кеш
 
-Индекс сохраняется в `.ai-context.db` (SQLite, 6 таблиц). При повторном запуске:
-- Если исходники не изменились → загрузка из кеша
-- Если есть изменения → инкрементальное обновление (только изменённые файлы)
+Индекс сохраняется в `.ai-context.db` (SQLite, 6 таблиц): `meta`, `files`, `classes`, `methods`, `deps`, `calls`.
 
-Таблицы: `meta`, `files`, `classes`, `methods`, `deps`, `calls`.
+- **Холодный старт** (первый запуск): полное сканирование + AST-парсинг (10-40 сек в зависимости от размера)
+- **Горячий старт** (без изменений): загрузка из кеша (<0.5 сек)
+- **Инкремент** (есть изменения): перепарсинг только изменённых файлов
 
+## Результаты тестирования (2026-05-21)
+
+| Проект | Файлов | Классов | Методов | Deps | Индекс | ctx_build |
+|--------|--------|---------|---------|------|--------|-----------|
+| nopCommerce (C#) | 6 350 | 3 617 | 9 869 | 50 986 | 38s | ~2000 tok |
+| monica (PHP) | 2 091 | 1 409 | 4 879 | 184K | 10s | ~2000 tok |
+| rustdesk (Dart+Rust) | 928 | 570 | 2 838 | 216 | 5s | ~1500 tok |
+| directus (TS) | 4 068 | 624 | 1 321 | 7 985 | 15s | ~2000 tok |
+| strapi (TS) | 5 907 | 2 279 | 1 069 | 8 969 | 25s | ~1800 tok |
+| FPSSample (C#/Unity) | 12 727 | 2 152 | 8 239 | 81K | 38s | ~2200 tok |
+| EpicSurvivalGame (C++) | 764 | 38 | 329 | 120 | 2s | ~2000 tok |
+
+**Качество вывода (deepseek-v4-pro):** все 8 секций заполнены, dependency graph из реальных данных, conventions project-specific, сниппеты только из read_file/compact_file (без fabrication).
+
+## Лицензия
+
+MIT

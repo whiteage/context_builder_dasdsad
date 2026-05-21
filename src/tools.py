@@ -464,12 +464,12 @@ def create_tools(index: ProjectIndex, ctx: ToolContext = None) -> list:
             lines.append(f"  ... ({len(found) - 20} more)")
 
         # Read first 60 lines of top 5 docs
-        lines.append("\n--- Preview (first 60 lines of top docs) ---")
-        for p in sorted(found)[:5]:
+        lines.append("\n--- Preview (first 30 lines of top docs) ---")
+        for p in sorted(found)[:3]:
             full_path = Path(index.repo.project_path) / p
             try:
                 content = full_path.read_text(encoding="utf-8", errors="replace")
-                preview_lines = content.split("\n")[:60]
+                preview_lines = content.split("\n")[:30]
                 lines.append(f"\n### {p}")
                 lines.append(mask_secrets("\n".join(
                     f"{i + 1}: {line}" for i, line in enumerate(preview_lines)

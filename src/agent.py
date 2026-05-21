@@ -74,7 +74,7 @@ class CtxBuilderAgent:
 
     def run(self, task: str, token_budget: int = 30000) -> str:
         # Phase 1: Gather — let the agent collect tool data
-        gatherer_prompt = make_gatherer_prompt(token_budget=token_budget, max_steps=self.max_steps)
+        gatherer_prompt = make_gatherer_prompt(token_budget=token_budget, max_steps=self.max_steps, task=task)
         result = self.graph.invoke({
             "messages": [SystemMessage(content=gatherer_prompt), HumanMessage(content=task)],
             "step_count": 0,
@@ -86,12 +86,32 @@ class CtxBuilderAgent:
         if not collected:
             return "Gatherer collected no data — no tools were called. Check project indexing."
 
-        # Phase 2: Write — produce the 8-section document from collected data
+        # Store debug info for caller
+        self.last_tools = list(collected.keys())
+        self.last_has_code = bool(collected.get("read_file") or collected.get("compact_file"))
+        self.last_tool_bytes = {k: len(v) for k, v in collected.items()}
+
+        # Phase 2: Write — produce the document from collected data
         writer_prompt = make_writer_prompt(task=task, collected=collected)
         try:
             response = self.llm.invoke(writer_prompt)
             content = getattr(response, "content", None)
-            return str(content) if content else "Writer produced no output."
+            if not content:
+                return "Writer produced no output."
+            result_text = str(content)
+
+            # Post-process: strip fabricated snippets if gatherer didn't collect source code
+            if not self.last_has_code:
+                import re
+                result_text = re.sub(
+                    r'\n### 8\.\s*RELEVANT CODE SNIPPETS.*$',
+                    '\n### 8. RELEVANT CODE SNIPPETS\n'
+                    'No code snippets available — gatherer did not call read_file or compact_file.\n'
+                    f'Collected tools: {", ".join(self.last_tools)}.',
+                    result_text, flags=re.DOTALL
+                )
+
+            return result_text
         except Exception as e:
             return f"Writer error: {str(e)}"
 
