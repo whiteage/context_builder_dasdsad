@@ -137,7 +137,7 @@ async def _handle_build(args: dict) -> list[TextContent]:
     ctx = ToolContext(token_budget=config.agent_token_budget)
     llm = create_model(provider, model)
     tools = create_tools(index, ctx)
-    agent = CtxBuilderAgent(model=llm, tools=tools, ctx=ctx, max_steps=config.max_steps)
+    agent = CtxBuilderAgent(model=llm, tools=tools, ctx=ctx)
 
     result = agent.run(task, token_budget=config.agent_token_budget)
     if not result:

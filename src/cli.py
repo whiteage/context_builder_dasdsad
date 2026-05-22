@@ -98,7 +98,7 @@ def main(project: str, task: str | None, provider: str, model: str,
 
     llm = create_model(actual_provider, actual_model)
 
-    agent = CtxBuilderAgent(model=llm, tools=tools, ctx=ctx, max_steps=config.max_steps)
+    agent = CtxBuilderAgent(model=llm, tools=tools, ctx=ctx)
     result = agent.run(task, token_budget=config.agent_token_budget)
 
     tokens = count_tokens(result)

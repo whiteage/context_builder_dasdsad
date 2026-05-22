@@ -23,49 +23,59 @@ def _parse_unknown_pct(classify_output: str) -> int | None:
     return None
 
 
-def make_gatherer_prompt(token_budget: int = 30000, max_steps: int = 12, task: str = "") -> str:
+def make_gatherer_prompt(token_budget: int = 30000, task: str = "") -> str:
+    return ""  # No longer used — plan+execute replaced the gatherer loop
+
+
+def make_planner_prompt(task: str, token_budget: int = 30000) -> str:
+    """Prompt for the planner phase: LLM returns JSON plan of file-level tools to call."""
     is_code_gen = any(kw in task.lower() for kw in [
         "code generation", "add a new", "create a new", "implement",
         "add new", "create new",
     ])
 
-    extra_rule = ""
+    code_gen_rule = ""
     if is_code_gen:
-        extra_rule = """
-## Code Generation — CRITICAL
-- find_files to locate the EXACT file that does what you're asked to create.
-- read_file on that file (FULL, 80-120 lines) — NOT compact_file. You need the complete implementation to understand the pattern.
-- Then compact_file on 1-2 related files for additional context.
-"""
+        code_gen_rule = (
+            '- For Code Generation tasks: use find_files to locate the pattern file FIRST, '
+            'then include read_file (80-120 lines) on it. Add compact_file on 1-2 related files.'
+        )
 
-    return f"""You are a data-collection agent. Your ONLY job: call tools to gather information about a codebase.
+    return f"""You are a planner. Given pre-collected project data below, return a JSON plan of file-level tools to call.
 
-## BATCHING — call as many tools per message as possible
-Tools are executed concurrently — calling 4 tools in one message takes the same time as 1.
-Group independent tools together:
-
-**Batch 1 (all at once):** get_summary, get_docs, classify_entities, get_module_graph
-**Batch 2 (all at once):** search_symbol for ALL key terms, sample_signatures
-**Batch 3 (after seeing search results):** get_dependencies on EVERY file found (at least 2-3 files)
-**Batch 4 (after seeing dependencies):** compact_file on top-3 relevant files
-**Batch 5 (optional):** find_similar on main class, more read_file if needed
-
-IF the task requires code-level detail, do this AFTER the above:
-**Batch N:** read_file on the PRIMARY target file (80-120 lines){extra_rule}
-
-MINIMUM: Complete at least batches 1-4. This is 4 steps with many tools each, not 10+ steps.
+## Available tools
+- "sample_signatures": true/false — always true (needed for conventions)
+- "get_dependencies": ["path1", "path2", ...] — 2-4 files from search_symbol results
+- "compact_file": ["path1", "path2", ...] — 1-3 most relevant files
+- "read_file": [{{"path": "p", "start": 1, "end": 120}}, ...] — 1 file, 80-120 lines for code review/gen tasks
+- "find_similar": ["ClassName"] — on the main class from task (optional)
+- "find_files": [{{"pattern": "*.cs", "language": "csharp", "file_type": "source"}}] — for Code Gen tasks
+- "search_symbol": ["term1", "term2", ...] — search codebase for symbols matching these terms (max 6)
 
 ## Key rules
-- You do NOT analyze, summarize, or write a document — a separate writer agent will handle that.
-- get_dependencies is MANDATORY. Call it for at least 2 files found via search_symbol.
-- Never re-read file ranges already covered (check get_token_budget before reads).
-- CRITICAL: Every message you send MUST include multiple tool calls. Never call just one tool.
-- Do NOT stop before completing all batches (1-4 minimum).
+- "get_dependencies" is MANDATORY — include at least 2 files from search_symbol or classify_entities results
+- "sample_signatures" is MANDATORY — always true
+- **Coverage check:** if pre-collected search_symbol results seem unrelated to the task, request additional "search_symbol" calls with task-specific terms (use the task description to derive search terms, not just what was pre-collected)
+- **Primary file for read_file:** pick the file that IMPLEMENTS the task's core concept — the one whose methods do what the task asks about. Do NOT pick infrastructure/middleware/auth files unless the task is specifically about them. Look at search_symbol results: the file whose symbols directly answer the task question is the primary file
+- For Architecture/Bug Fix tasks: compact_file on top-3 files, read_file on the PRIMARY file (80-120 lines)
+- For Code Generation: read_file on the pattern file FIRST, then compact_file on related files
+- Skip "find_similar" if no clear main class in the task
+- Pick files that best match the task from the pre-collected data below
+{code_gen_rule}
 
-## Limits
-- {token_budget} tokens budget for tool outputs.
-- {max_steps} max tool-calling iterations (each message counts as 1 step regardless of how many tool calls it contains).
-"""
+## Token budget: {token_budget}. Do NOT plan more than budget allows.
+## Output ONLY valid JSON, no other text. Use this exact structure:
+```json
+{{
+  "sample_signatures": true,
+  "get_dependencies": ["path1", "path2"],
+  "compact_file": ["path1", "path2"],
+  "read_file": [],
+  "search_symbol": [],
+  "find_similar": [],
+  "find_files": []
+}}
+```"""
 
 
 def make_writer_prompt(task: str, collected: dict[str, str]) -> str:

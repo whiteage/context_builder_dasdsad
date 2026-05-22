@@ -55,7 +55,8 @@
       "Read(//mnt/c/Users/wh1te/**)",
       "Read(//c/Users/wh1te/PycharmProjects/**)",
       "Bash(dart run *)",
-      "Bash(Select-Object Name)"
+      "Bash(Select-Object Name)",
+      "Bash(curl -s \"https://gitlab.com/api/v4/projects?search=roslyn&order_by=last_activity_at&per_page=5\")"
     ]
   },
   "enableAllProjectMcpServers": true,

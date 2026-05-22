@@ -108,7 +108,7 @@ ctx-build -p . -t "Documentation: API overview" -o docs/context.md
 | DeepSeek | `--provider deepseek` | deepseek-chat, deepseek-v4-pro | `DEEPSEEK_API_KEY` |
 | Локальный | `--provider local` | Любая OpenAI-совместимая | `LOCAL_LLM_URL` |
 
-**Рекомендация:** deepseek-v4-pro — лучший баланс качества и скорости. Лучше следует инструкциям, не выдумывает код, использует реальные данные из тулзов.
+**Рекомендация:** deepseek-v4-flash — лучший баланс цены и скорости для plan+execute архитектуры. deepseek-v4-pro даёт более детальный вывод, но в 3-4 раза медленнее.
 
 ## Формат вывода — 8 секций
 
@@ -140,8 +140,7 @@ indexing:
 
 context:
   max_tokens: 120000          # лимит выходного документа
-  agent_token_budget: 50000   # бюджет gatherer'а на чтение тулзов
-  max_steps: 25               # макс. итераций gatherer'а
+  agent_token_budget: 80000   # бюджет на сбор данных (pre-collect + planner)
   include_tests: true
   include_docs: true
 
@@ -214,14 +213,14 @@ ctx-build -p . --gitlab-mr 123:5 --gitlab-url https://gitlab.example.com
 CLI (cli.py)              MCP Server (mcp_server.py)
          └────────────┬────────────┘
                    Agent (agent.py)
-              Plan-and-Execute pattern
-         ┌─────────┴─────────┐
-    Gatherer              Writer
- (agent + tools,      (LLM без тулзов,
-  сбор данных)         пишет документ)
-         │
+              Plan+Execute pattern
+         ┌─────────┴──────────┐
+    Phase 0+2 (код)      Phase 1 (LLM)      Phase 3 (LLM)
+    Pre-collect +        Planner             Writer
+    Execute              JSON-план тулзов    пишет документ
+         │                    │
     Tools (tools.py)     Prompts (prompts/system.py)
-    15 тулзов +            gatherer/writer промпты
+    15 тулзов +           planner/writer промпты
     mask_secrets
          │
     Index (index.py)
@@ -238,14 +237,19 @@ CLI (cli.py)              MCP Server (mcp_server.py)
     .ai-context.yml       GitLabClient, MR анализ
 ```
 
-### Plan-and-Execute
+### Plan+Execute (три фазы)
 
-Агент работает в два этапа:
+Агент работает в три фазы:
 
-1. **Gatherer** — агент с тулзами, только собирает данные (get_summary → search_symbol → get_dependencies → compact_file → read_file). Не пишет документ.
-2. **Writer** — одиночный LLM-вызов без тулзов. Получает собранные данные → формирует 8-секционный документ.
+1. **Phase 0 — Pre-collect (код, ~1s):** Параллельный вызов 5-9 независимых инструментов без участия LLM: `get_summary`, `get_docs`, `classify_entities`, `get_module_graph`, `search_symbol` по ключевым словам из задачи.
 
-Разделение решает проблему deepseek-chat: модель в режиме tool-calling залипает на вызовах тулзов и не переключается на написание документа.
+2. **Phase 1 — Planner (LLM, 1 вызов, ~5s):** LLM получает pre-collected данные и возвращает JSON-план: какие файлы передать в `get_dependencies`, `compact_file`, `read_file`, `find_similar`. Один LLM-вызов вместо 7-30 в старой gatherer-архитектуре.
+
+3. **Phase 2 — Execute (код, ~1s):** Параллельное исполнение всех тулзов из JSON-плана через ThreadPoolExecutor.
+
+4. **Phase 3 — Writer (LLM, 1 вызов, ~12s):** Одиночный LLM-вызов без тулзов. Получает все собранные данные → формирует 8-секционный документ.
+
+**Преимущества:** 1 LLM-раундтрип вместо 7-30 в фазе сбора данных. Общее время ~19s (стабильно) вместо 50-150s (вариативно).
 
 ### Инкрементальное сканирование
 
@@ -261,23 +265,32 @@ CLI (cli.py)              MCP Server (mcp_server.py)
 
 Индекс сохраняется в `.ai-context.db` (SQLite, 6 таблиц): `meta`, `files`, `classes`, `methods`, `deps`, `calls`.
 
-- **Холодный старт** (первый запуск): полное сканирование + AST-парсинг (10-40 сек в зависимости от размера)
-- **Горячий старт** (без изменений): загрузка из кеша (<0.5 сек)
+- **Холодный старт** (первый запуск): полное сканирование + AST-парсинг (1-58 сек в зависимости от размера)
+- **Горячий старт** (без изменений): загрузка из кеша (<1 сек)
 - **Инкремент** (есть изменения): перепарсинг только изменённых файлов
+- **ctx_build (холодный):** ~20s (индекс + 1 LLM-планер + 1 LLM-райтер + параллельный execute)
+- **ctx_build (горячий):** ~18s (<1s индекс + 1 LLM-планер + 1 LLM-райтер + параллельный execute)
 
-## Результаты тестирования (2026-05-21)
+## Результаты тестирования (2026-05-22, plan+execute, deepseek-v4-flash)
 
-| Проект | Файлов | Классов | Методов | Deps | Индекс | ctx_build |
-|--------|--------|---------|---------|------|--------|-----------|
-| nopCommerce (C#) | 6 350 | 3 617 | 9 869 | 50 986 | 38s | ~2000 tok |
-| monica (PHP) | 2 091 | 1 409 | 4 879 | 184K | 10s | ~2000 tok |
-| rustdesk (Dart+Rust) | 928 | 570 | 2 838 | 216 | 5s | ~1500 tok |
-| directus (TS) | 4 068 | 624 | 1 321 | 7 985 | 15s | ~2000 tok |
-| strapi (TS) | 5 907 | 2 279 | 1 069 | 8 969 | 25s | ~1800 tok |
-| FPSSample (C#/Unity) | 12 727 | 2 152 | 8 239 | 81K | 38s | ~2200 tok |
-| EpicSurvivalGame (C++) | 764 | 38 | 329 | 120 | 2s | ~2000 tok |
+| Проект | Файлов | Классов | Методов | Deps | Индекс (хол) | Индекс (гор) | Шагов LLM | get_deps |
+|--------|--------|---------|---------|------|-------------|-------------|-----------|----------|
+| nopCommerce (C#) | 6 350 | 3 617 | 9 869 | 51K | 58s | <1s | 1 | 4-7K |
+| directus (TS) | 4 075 | 3 128 | 1 349 | 7 988 | 9s | <1s | 1 | 0.3-1.6K |
+| strapi (TS) | 5 907 | 5 631 | 1 586 | 8 996 | 7s | <1s | 1 | 0.6-1.8K |
+| FPSSample (C#/Unity) | 12 727 | 2 152 | 8 239 | 81K | 39s | <1s | 1 | 5.6-7.8K |
+| EpicSurvivalGame (C++) | 766 | 38 | 329 | 120 | 1s | <1s | 1 | 0-1.2K |
+| rustdesk (Dart+Rust) | 928 | 570 | 2 838 | 216 | 5s | <1s | 1 | 0.6-1.5K |
 
-**Качество вывода (deepseek-v4-pro):** все 8 секций заполнены, dependency graph из реальных данных, conventions project-specific, сниппеты только из read_file/compact_file (без fabrication).
+**Plan+Execute — всегда 1 LLM-шаг в фазе сбора.** `get_dependencies` вызывается в 100% запусков (против 71-93% в старой gatherer-архитектуре). Все 8 секций документа заполняются реальными данными.
+
+**Модели:**
+
+| Модель | LLM время | Качество | Батчинг |
+|--------|-----------|----------|---------|
+| deepseek-v4-flash | ~19s | Хорошее | Не нужен (plan+execute) |
+| deepseek-v4-pro | ~35s | Отличное | Не нужен (plan+execute) |
+| deepseek-chat | ~25s | Среднее | Не рекомендуется |
 
 ## Лицензия
 
