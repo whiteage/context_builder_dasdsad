@@ -45,9 +45,9 @@ class CtxBuilderAgent:
 
     def _tool_node(self, state: AgentState) -> dict[str, list[Any]]:
         last = state["messages"][-1]
-        results: list[ToolMessage] = []
+        tool_calls = last.tool_calls
 
-        for tc in last.tool_calls:
+        def _invoke_one(tc):
             fn = self._tools_by_name.get(tc["name"])
             if fn:
                 try:
@@ -58,7 +58,16 @@ class CtxBuilderAgent:
                     content = f"Tool '{tc['name']}' error: {str(e)}"
             else:
                 content = f"Unknown tool: {tc['name']}"
-            results.append(ToolMessage(content=str(content), tool_call_id=tc["id"]))
+            return ToolMessage(content=str(content), tool_call_id=tc["id"])
+
+        if len(tool_calls) <= 1:
+            results = [_invoke_one(tc) for tc in tool_calls]
+        else:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            with ThreadPoolExecutor(max_workers=len(tool_calls)) as pool:
+                futures = {pool.submit(_invoke_one, tc): tc["id"] for tc in tool_calls}
+                # Collect in original order (ToolMessage has tool_call_id for matching)
+                results = [f.result() for f in as_completed(futures)]
 
         new_step = state.get("step_count", 0) + 1
         return {"messages": results, "step_count": new_step}
@@ -87,6 +96,7 @@ class CtxBuilderAgent:
             return "Gatherer collected no data — no tools were called. Check project indexing."
 
         # Store debug info for caller
+        self.last_steps = result.get("step_count", 0)
         self.last_tools = list(collected.keys())
         self.last_has_code = bool(collected.get("read_file") or collected.get("compact_file"))
         self.last_tool_bytes = {k: len(v) for k, v in collected.items()}

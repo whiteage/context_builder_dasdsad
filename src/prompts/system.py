@@ -40,29 +40,31 @@ def make_gatherer_prompt(token_budget: int = 30000, max_steps: int = 12, task: s
 
     return f"""You are a data-collection agent. Your ONLY job: call tools to gather information about a codebase.
 
-## Required tool calls (in order)
-1. get_summary — always first
-2. get_docs — always second
-3. classify_entities — always
-4. search_symbol — extract 2-4 key terms from the task, search each
-5. get_dependencies — for EVERY file found by search_symbol (at least 2 files)
-6. sample_signatures — always
-7. compact_file — top-3 relevant files found above
-8. find_similar — on the main class from the task
-9. get_module_graph — for architecture/refactoring tasks
-10. read_file — on the PRIMARY target file for the task, 80-120 lines{extra_rule}
+## BATCHING — call as many tools per message as possible
+Tools are executed concurrently — calling 4 tools in one message takes the same time as 1.
+Group independent tools together:
+
+**Batch 1 (all at once):** get_summary, get_docs, classify_entities, get_module_graph
+**Batch 2 (all at once):** search_symbol for ALL key terms, sample_signatures
+**Batch 3 (after seeing search results):** get_dependencies on EVERY file found (at least 2-3 files)
+**Batch 4 (after seeing dependencies):** compact_file on top-3 relevant files
+**Batch 5 (optional):** find_similar on main class, more read_file if needed
+
+IF the task requires code-level detail, do this AFTER the above:
+**Batch N:** read_file on the PRIMARY target file (80-120 lines){extra_rule}
+
+MINIMUM: Complete at least batches 1-4. This is 4 steps with many tools each, not 10+ steps.
 
 ## Key rules
 - You do NOT analyze, summarize, or write a document — a separate writer agent will handle that.
 - get_dependencies is MANDATORY. Call it for at least 2 files found via search_symbol.
 - Never re-read file ranges already covered (check get_token_budget before reads).
-- For Code Generation: read_file on the target file FIRST, then compact_file on related files.
-- For Bug Fixing / Architecture: compact_file first, then read_file on critical sections.
-- Do NOT stop before completing all required steps (1-7 minimum). Only stop when get_dependencies AND compact_file have been called.
+- CRITICAL: Every message you send MUST include multiple tool calls. Never call just one tool.
+- Do NOT stop before completing all batches (1-4 minimum).
 
 ## Limits
 - {token_budget} tokens budget for tool outputs.
-- {max_steps} max tool-calling iterations.
+- {max_steps} max tool-calling iterations (each message counts as 1 step regardless of how many tool calls it contains).
 """
 
 

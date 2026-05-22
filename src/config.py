@@ -61,8 +61,8 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "indexing": {"exclude": DEFAULT_EXCLUDE},
     "context": {
         "max_tokens": 120000,
-        "agent_token_budget": 50000,
-        "max_steps": 25,
+        "agent_token_budget": 80000,
+        "max_steps": 30,
         "include_tests": True,
         "include_docs": True,
     },

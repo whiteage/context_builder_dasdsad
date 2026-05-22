@@ -147,9 +147,10 @@ async def _handle_build(args: dict) -> list[TextContent]:
 
     # Debug: show what tools gatherer actually called
     tools_called = getattr(agent, 'last_tools', [])
+    steps = getattr(agent, 'last_steps', 0)
     has_code = getattr(agent, 'last_has_code', False)
     tool_sizes = getattr(agent, 'last_tool_bytes', {})
-    debug_line = f"[DEBUG] Tools: {', '.join(tools_called)} | Has code: {has_code}"
+    debug_line = f"[DEBUG] Steps: {steps} | Tools: {', '.join(tools_called)} | Has code: {has_code}"
     if tool_sizes:
         debug_line += " | " + " ".join(f"{k}={v}B" for k, v in tool_sizes.items())
 
