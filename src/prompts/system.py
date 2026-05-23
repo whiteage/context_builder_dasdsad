@@ -106,7 +106,7 @@ def make_writer_prompt(task: str, collected: dict[str, str]) -> str:
         "### 1. PROJECT SUMMARY — tech stack, file count, languages, project type (2-4 sentences)",
         arch_section,
         "### 3. RELATED FILES — at least 5 files with path, entity type, purpose, relevance to task",
-        "### 4. DEPENDENCY GRAPH — use get_dependencies tool output. List actual imports/imported-by counts per file. If no get_dependencies data: write \"No dependency data collected — gatherer did not call get_dependencies.\" Do NOT invent dependency chains from general knowledge.",
+        "### 4. DEPENDENCY GRAPH — use get_dependencies tool output. List actual imports/imported-by counts per file. If get_dependencies is absent from collected tools: write \"No dependency data collected — planner did not request get_dependencies.\" If get_dependencies is present but all files show 0 imports: write \"These files have no recorded internal dependencies (imports may be external packages or framework headers).\" Do NOT invent dependency chains from general knowledge.",
         conv_section,
         "### 6. SIMILAR IMPLEMENTATIONS — at least 3 classes with same patterns, with file paths",
         "### 7. TASK CONTEXT — self-contained summary for downstream AI: what to touch, follow, avoid",

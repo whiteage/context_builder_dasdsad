@@ -182,10 +182,15 @@ class CtxBuilderAgent:
         if not parsed.get("get_dependencies"):
             parsed["get_dependencies"] = ranked[:3]
         else:
-            # Validate: if planner's choices don't overlap with search results, replace them
+            # Always merge planner's choices with top search_symbol files.
+            # Planner may pick files that appear in search results but have
+            # empty dependency data (e.g. auth middleware), so we add a safety
+            # net of the highest-frequency files from search_symbol.
             chosen = parsed["get_dependencies"]
-            if not any(f in search_files for f in chosen):
-                parsed["get_dependencies"] = ranked[:3]
+            for f in ranked:
+                if f not in chosen and len(chosen) < 5:
+                    chosen.append(f)
+            parsed["get_dependencies"] = chosen
 
         plan["sample_signatures"] = [{}] if parsed.get("sample_signatures") else []
         plan["get_dependencies"] = [{"path": p} for p in parsed.get("get_dependencies", [])[:10]]

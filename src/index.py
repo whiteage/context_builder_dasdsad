@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sqlite3
 import time
 from dataclasses import dataclass, field
@@ -85,12 +86,20 @@ class DependencyGraph:
                 class_files.setdefault(cls.name.lower(), set()).add(path)
 
         def _resolve_type(type_name: str) -> str | None:
-            """Resolve a simple type name to a file. Strips generics and arrays."""
+            """Resolve a simple type name to a file. Strips generics, arrays,
+            C++ qualifiers (struct/class/const/&/*), and namespaces."""
             clean = type_name.split("<")[0].split("[")[0].replace("?", "").strip()
+            # Strip C++ qualifiers: "struct FDamageEvent const&" → "FDamageEvent"
+            clean = re.sub(r'\b(struct|class|const|typename|enum)\s+', '', clean)
+            clean = re.sub(r'[\s*&]+$', '', clean)
+            clean = clean.rstrip('*& \t').strip()
+            # Strip namespace prefix: "Nop.Core.Domain.Customers.Customer" → "Customer"
             if clean and clean[0].isupper():
-                files = class_files.get(clean.lower())
-                if files and len(files) == 1:
-                    return next(iter(files))
+                # Try full name first, then last segment (for namespaced types)
+                for candidate in (clean, clean.rsplit(".", 1)[-1], clean.rsplit("::", 1)[-1]):
+                    files = class_files.get(candidate.lower())
+                    if files and len(files) == 1:
+                        return next(iter(files))
             return None
 
         for path, fast in ast.files.items():
@@ -239,34 +248,57 @@ class DependencyGraph:
         """
         project_path = Path(repo.project_path)
 
-        # 1. Try tsconfig.json compilerOptions.paths
-        for tsconfig_name in ("tsconfig.json", "tsconfig.base.json", "tsconfig.build.json"):
-            tsconfig = project_path / tsconfig_name
-            if tsconfig.exists():
-                try:
-                    tsdata = json.loads(tsconfig.read_text(encoding="utf-8"))
-                    paths = tsdata.get("compilerOptions", {}).get("paths", {})
-                    for pattern, targets in paths.items():
-                        # pattern like "@directus/*" or "@scope/pkg"
-                        prefix = pattern.rstrip("*")
-                        if import_str == pattern or (
-                            "*" in pattern and import_str.startswith(prefix)
-                        ):
-                            suffix = import_str[len(prefix):]
-                            for t in targets:
-                                t = t.replace("/*", "").rstrip("/")
-                                resolved = (t + suffix).replace("\\", "/")
-                                result = DependencyGraph._match_file(resolved, repo)
-                                if result:
-                                    return result
-                                # Try /index
-                                for ext in (".ts", ".tsx", ".js", ".jsx"):
-                                    idx = os.path.join(resolved, "index" + ext).replace("\\", "/")
-                                    if idx in repo.files:
-                                        return idx
-                except Exception:
-                    pass
-                break  # only check first found tsconfig
+        # 1. Try tsconfig.json compilerOptions.paths (root + common subdirs)
+        tsconfig_candidates: list[Path] = [project_path]
+        # Monorepo subdirs that often have their own tsconfig
+        for sub in ("api", "app", "sdk", "src"):
+            tsconfig_candidates.append(project_path / sub)
+        # Also check packages/*/ subdirs (e.g. packages/env/tsconfig.json)
+        pkg_root = project_path / "packages"
+        if pkg_root.is_dir():
+            for pkg_dir in pkg_root.iterdir():
+                if pkg_dir.is_dir():
+                    tsconfig_candidates.append(pkg_dir)
+
+        tsconfig_found = False
+        for base_dir in tsconfig_candidates:
+            for tsconfig_name in ("tsconfig.json", "tsconfig.base.json", "tsconfig.build.json"):
+                tsconfig = base_dir / tsconfig_name
+                if tsconfig.exists():
+                    try:
+                        tsdata = json.loads(tsconfig.read_text(encoding="utf-8"))
+                        paths = tsdata.get("compilerOptions", {}).get("paths", {})
+                        # Resolve path targets relative to this tsconfig's directory, not project root
+                        for pattern, targets in paths.items():
+                            prefix = pattern.rstrip("*")
+                            if import_str == pattern or (
+                                "*" in pattern and import_str.startswith(prefix)
+                            ):
+                                suffix = import_str[len(prefix):]
+                                for t in targets:
+                                    t = t.replace("/*", "").rstrip("/")
+                                    resolved = os.path.normpath(
+                                        os.path.join(str(base_dir), t + suffix)
+                                    ).replace("\\", "/")
+                                    # Match from project root (strip leading base_dir)
+                                    try:
+                                        rel = str(Path(resolved).relative_to(project_path)).replace("\\", "/")
+                                    except ValueError:
+                                        rel = resolved
+                                    result = DependencyGraph._match_file(rel, repo)
+                                    if result:
+                                        return result
+                                    # Try /index
+                                    for ext in (".ts", ".tsx", ".js", ".jsx"):
+                                        idx = os.path.join(rel, "index" + ext).replace("\\", "/")
+                                        if idx in repo.files:
+                                            return idx
+                        tsconfig_found = True
+                    except Exception:
+                        pass
+                    break  # only check first matching tsconfig per base_dir
+            if tsconfig_found:
+                break
 
         # 2. Try package.json workspaces
         pkg_json = project_path / "package.json"
@@ -324,6 +356,16 @@ class DependencyGraph:
                                 return candidate
                     except Exception:
                         pass
+
+        # 4. Fuzzy fallback: scan repo for any directory matching the short package name.
+        # Catches packages outside standard monorepo layouts (e.g. api/, app/ roots).
+        if "/" in import_str:
+            pkg_short = import_str.split("/")[-1]
+            for file_path in repo.files:
+                if file_path.endswith(("/index.ts", "/index.tsx", "/index.js")):
+                    dir_path = "/".join(file_path.split("/")[:-1])
+                    if dir_path.endswith("/" + pkg_short) or dir_path.endswith("/" + pkg_short + "/src"):
+                        return file_path
 
         return None
 
