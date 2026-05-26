@@ -56,7 +56,8 @@
       "Read(//c/Users/wh1te/PycharmProjects/**)",
       "Bash(dart run *)",
       "Bash(Select-Object Name)",
-      "Bash(curl -s \"https://gitlab.com/api/v4/projects?search=roslyn&order_by=last_activity_at&per_page=5\")"
+      "Bash(curl -s \"https://gitlab.com/api/v4/projects?search=roslyn&order_by=last_activity_at&per_page=5\")",
+      "Bash(Select-Object -ExpandProperty Name)"
     ]
   },
   "enableAllProjectMcpServers": true,

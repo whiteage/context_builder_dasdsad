@@ -68,7 +68,7 @@ async def list_tools() -> list[Tool]:
         ),
         Tool(
             name="ctx_gitlab_mr",
-            description="Fetch a GitLab merge request and build a context task for code review. Requires GITLAB_TOKEN env var.",
+            description="Fetch a GitLab merge request with diffs via API. Returns MR metadata, changed files list, and inline diffs (up to 200 lines/file, max 5 files). No cloning, no LLM — pure API. Requires GITLAB_TOKEN env var.",
             inputSchema={
                 "type": "object",
                 "properties": {
@@ -167,15 +167,20 @@ async def _handle_build(args: dict) -> list[TextContent]:
 
 
 async def _handle_gitlab_mr(args: dict) -> list[TextContent]:
-    from src.gitlab import GitLabClient
+    from src.gitlab import GitLabClient, GitLabError
 
     project_id = args["project_id"]
     mr_iid = args["mr_iid"]
     gitlab_url = args.get("gitlab_url", "https://gitlab.com")
 
-    client = GitLabClient(gitlab_url)
-    task = client.build_mr_context(project_id, mr_iid)
-    return [TextContent(type="text", text=task)]
+    try:
+        client = GitLabClient(gitlab_url)
+        task = client.build_mr_context(project_id, mr_iid)
+        return [TextContent(type="text", text=task)]
+    except GitLabError as e:
+        return [TextContent(type="text", text=f"GitLab error: {e}")]
+    except Exception as e:
+        return [TextContent(type="text", text=f"Error: {e}")]
 
 
 def main():

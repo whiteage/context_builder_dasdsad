@@ -157,9 +157,14 @@ class DependencyGraph:
 
     @staticmethod
     def _build_module_graph(file_deps: dict[str, set[str]]) -> dict[str, set[str]]:
-        """Group file-level dependencies by top-level directory/namespace."""
+        """Group file-level dependencies by top-level directory/namespace.
+        Uses 2 path segments so that projects with a single root (e.g. src/, packages/)
+        still produce meaningful module groupings (src/Libraries, src/Presentation, etc.)."""
         def module_of(p: str) -> str:
-            return p.split("/")[0] if "/" in p else "root"
+            parts = p.split("/")
+            if len(parts) >= 2:
+                return f"{parts[0]}/{parts[1]}"
+            return parts[0] if parts[0] else "root"
 
         modules: dict[str, set[str]] = {}
         for source, targets in file_deps.items():

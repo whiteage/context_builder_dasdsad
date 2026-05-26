@@ -134,16 +134,16 @@ class GitLabClient:
         except GitLabError:
             return None
 
-    def build_mr_context(self, project_id: int | str, mr_iid: int) -> str:
+    def build_mr_context(self, project_id: int | str, mr_iid: int,
+                          include_diffs: bool = True) -> str:
         """Build a ctx-builder task description from a GitLab MR.
 
         Returns a task string ready for ctx-build --task.
+        If include_diffs is True, embeds truncated diffs (max 200 lines/file, max 5 files).
         """
         mr = self.get_merge_request(project_id, mr_iid)
         project = self.get_project(project_id)
         changes = self.get_mr_changes(project_id, mr_iid)
-
-        changed_files = [c.get("new_path", c.get("old_path", "")) for c in changes]
 
         lines = [
             f"Code Review: Analyze merge request !{mr.iid} in {project.path_with_namespace}",
@@ -151,12 +151,43 @@ class GitLabClient:
             f"Description: {mr.description[:300] if mr.description else 'N/A'}",
             f"Branch: {mr.source_branch} -> {mr.target_branch}",
             f"Author: {mr.author}",
-            f"Changed files ({len(changed_files)}):",
+            f"Changed files ({len(changes)}):",
         ]
-        for f in changed_files[:30]:
-            lines.append(f"  {f}")
-        if len(changed_files) > 30:
-            lines.append(f"  ... ({len(changed_files) - 30} more)")
+        for c in changes:
+            path = c.get("new_path", c.get("old_path", ""))
+            flag = ""
+            if c.get("new_file"):
+                flag = " [new]"
+            elif c.get("deleted_file"):
+                flag = " [deleted]"
+            elif c.get("renamed_file"):
+                flag = f" [renamed from {c.get('old_path', '?')}]"
+            lines.append(f"  {path}{flag}")
+
+        if include_diffs and changes:
+            lines.append("")
+            lines.append("## Diffs")
+            diff_count = 0
+            MAX_DIFF_FILES = 5
+            MAX_DIFF_LINES = 200
+            for c in changes:
+                if diff_count >= MAX_DIFF_FILES:
+                    lines.append(f"... ({len(changes) - MAX_DIFF_FILES} more files)")
+                    break
+                diff = c.get("diff", "")
+                path = c.get("new_path", c.get("old_path", ""))
+                if not diff or diff.startswith("Binary files"):
+                    continue
+                diff_lines = diff.split("\n")
+                if len(diff_lines) > MAX_DIFF_LINES:
+                    diff = "\n".join(diff_lines[:MAX_DIFF_LINES])
+                    diff += f"\n... [truncated, {len(diff_lines) - MAX_DIFF_LINES} more lines]"
+                lines.append(f"### {path}")
+                lines.append("```diff")
+                lines.append(diff)
+                lines.append("```")
+                lines.append("")
+                diff_count += 1
 
         return "\n".join(lines)
 
@@ -183,6 +214,59 @@ class GitLabClient:
             raise GitLabError(f"Clone failed: {result.stderr[:300]}")
 
         return target
+
+    def setup_mr_repo(self, project_id: int | str, mr_iid: int,
+                      parent_dir: str | Path = "ctx_build_bench") -> Path:
+        """Clone a GitLab project and check out the MR's source branch HEAD.
+
+        Clones into ``parent_dir / namespace / project_name /``.
+        If the repo already exists, fetches and checks out the MR ref
+        instead of re-cloning.
+
+        Uses GitLab's ``refs/merge-requests/<iid>/head`` ref to get the
+        exact state proposed in the MR, regardless of whether the source
+        branch lives in the same repo or a fork.
+        """
+        import subprocess
+
+        project = self.get_project(project_id)
+        target = Path(parent_dir).resolve() / project.path_with_namespace
+
+        clone_url = f"{self.url}/{project.path_with_namespace}.git"
+        if self.token:
+            proto, rest = clone_url.split("://", 1)
+            clone_url = f"{proto}://oauth2:{self.token}@{rest}"
+
+        mr_ref = f"refs/merge-requests/{mr_iid}/head"
+
+        if (target / ".git").is_dir():
+            # Repo already cloned — fetch MR ref and checkout
+            _run_git(["git", "-C", str(target), "fetch", "--depth=1",
+                       "origin", mr_ref], timeout=120)
+            _run_git(["git", "-C", str(target), "checkout", "FETCH_HEAD"], timeout=30)
+        else:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _run_git(["git", "clone", "--depth=1", clone_url, str(target)], timeout=300)
+            _run_git(["git", "-C", str(target), "fetch", "--depth=1",
+                       "origin", mr_ref], timeout=120)
+            _run_git(["git", "-C", str(target), "checkout", "FETCH_HEAD"], timeout=30)
+
+        return target
+
+
+def _run_git(cmd: list[str], timeout: int = 300) -> None:
+    """Run a git command, raise GitLabError on failure."""
+    import subprocess
+
+    env = {
+        **__import__("os").environ,
+        "GIT_TERMINAL_PROMPT": "0",
+        "GIT_ASKPASS": "echo",
+        "GCM_INTERACTIVE": "Never",
+    }
+    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    if result.returncode != 0:
+        raise GitLabError(f"Git command failed: {' '.join(cmd)}\n{result.stderr[:300]}")
 
 
 class GitLabError(Exception):

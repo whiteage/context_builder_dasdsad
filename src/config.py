@@ -276,14 +276,17 @@ def _detect_project_types(project_path: Path) -> list[ProjectType]:
     # Walk directories to find nested project markers, stopping at sub-project boundaries
     walk_dirs = _walk_project_dirs(project_path)
 
-    # ASP.NET: .csproj or .sln (only in visited directories, not deeper)
+    # ASP.NET: .csproj or .sln with actual C# sources nearby
     if not any(p.parser == "cpp" for p in detected):
-        csproj_files: list[Path] = []
         for d in walk_dirs:
-            csproj_files.extend(d.glob("*.csproj"))
-            csproj_files.extend(d.glob("*.sln"))
-        if csproj_files:
-            detected.append(ProjectType("aspnet", "ASP.NET Core", "csharp"))
+            csproj_files = list(d.glob("*.csproj")) + list(d.glob("*.sln"))
+            if csproj_files:
+                # Require at least one .cs file in the same directory or its children
+                # to avoid false positives from installer/packaging helpers (e.g. res/msi/msi.sln)
+                has_cs = any(d.glob("**/*.cs"))
+                if has_cs:
+                    detected.append(ProjectType("aspnet", "ASP.NET Core", "csharp"))
+                    break
 
     # Unity: check visited directories for Assets/
     for d in walk_dirs:
@@ -293,8 +296,9 @@ def _detect_project_types(project_path: Path) -> list[ProjectType]:
             has_unity = any(assets_dir.glob("*.unity"))
             if has_meta or has_unity:
                 detected.append(ProjectType("unity", "Unity", "unity"))
+                # Unity uses C# — register csharp parser without a misleading project label
                 if not any(p.parser == "csharp" for p in detected):
-                    detected.append(ProjectType("aspnet", "ASP.NET Core", "csharp"))
+                    detected.append(ProjectType("unity-cs", "C#", "csharp"))
                 break
 
     # PHP / Laravel: check visited directories for composer.json
@@ -315,21 +319,23 @@ def _detect_project_types(project_path: Path) -> list[ProjectType]:
             break
 
     # Node / Vue / TypeScript: check visited directories for package.json
-    for d in walk_dirs:
-        package_json = d / "package.json"
-        if package_json.exists():
-            try:
-                import json
-                with open(package_json) as f:
-                    pkg = json.load(f)
-                all_deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
-                if "vue" in all_deps:
-                    detected.append(ProjectType("vue", "Vue.js", "typescript"))
-                else:
+    # Skip if Unity already detected — Unity packages have their own package.json format
+    if not any(p.type_id == "unity" for p in detected):
+        for d in walk_dirs:
+            package_json = d / "package.json"
+            if package_json.exists():
+                try:
+                    import json
+                    with open(package_json) as f:
+                        pkg = json.load(f)
+                    all_deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+                    if "vue" in all_deps:
+                        detected.append(ProjectType("vue", "Vue.js", "typescript"))
+                    else:
+                        detected.append(ProjectType("node", "Node.js / TypeScript", "typescript"))
+                except Exception:
                     detected.append(ProjectType("node", "Node.js / TypeScript", "typescript"))
-            except Exception:
-                detected.append(ProjectType("node", "Node.js / TypeScript", "typescript"))
-            break
+                break
 
     # Flutter / Dart: check visited directories for pubspec.yaml
     pubspec = project_path / "pubspec.yaml"

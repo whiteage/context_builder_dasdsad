@@ -20,11 +20,11 @@ AI-агент для автоматического сбора и формиро
 | Стек | Язык | Парсер | Охват |
 |------|------|--------|-------|
 | ASP.NET Core | C# | Roslyn AST | ~100% |
-| Unity | C# | Roslyn + .meta analysis | ~97% |
-| Laravel | PHP | PHP Parser | ~85% |
-| Flutter | Dart | Dart Analyzer | ~87% |
-| Node.js / TypeScript | TS/Vue | TS Compiler API + regex | ~20% |
-| Unreal Engine | C++ | tree-sitter AST | ~49% |
+| Unity | C# | Roslyn + .meta analysis | ~100% |
+| Laravel | PHP | PHP Parser | ~100% |
+| Flutter | Dart | Dart Analyzer | ~100% |
+| Node.js / TypeScript | TS/Vue | TS Compiler API + regex | ~100% |
+| Unreal Engine | C++ | tree-sitter AST | ~49%  |
 
 Для языков без парсера (Rust, Go, Python) агент работает через прямое чтение файлов через `read_file`/`compact_file`.
 
@@ -72,7 +72,7 @@ CTX_BUILDER_DEFAULT_MODEL=deepseek-v4-flash
 ctx-build -p . -t "Code Review" --provider anthropic --model claude-haiku-4-5-20251001
 ```
 
-Если ничего не указано — используется `deepseek/deepseek-chat`.
+Если ничего не указано — используется `deepseek/deepseek-flash`.
 
 ### 3. Проверка установки
 
@@ -90,11 +90,11 @@ ctx-build -p /path/to/project -t "Code Review: Analyze architecture"
 ctx-build -p . -t "Refactoring: Extract auth module" --provider openai --model gpt-4o
 ctx-build -p . -t "Bug Fixing: NullPointer in UserService" --provider anthropic --model claude-opus-4-7
 ctx-build -p . -t "Code Generation: Add email verification" --provider deepseek --model deepseek-v4-pro
+ctx-build -p C:\Users\wh1te\PycharmProjects\PythonProject10\projects\nopCommerce -t "Добавление email валидации"
 
 # Локальная модель (Ollama, LM Studio, vLLM)
 export LOCAL_LLM_URL=http://localhost:11434/v1
 ctx-build -p . -t "review" --provider local --model llama3
-
 # Сохранить в файл
 ctx-build -p . -t "Documentation: API overview" -o docs/context.md
 ```
@@ -147,9 +147,6 @@ context:
 similarity:
   enabled: true
 
-model:
-  provider: deepseek
-  name: deepseek-v4-pro
 ```
 
 Если `.ai-context.yml` отсутствует — используются значения по умолчанию (те же, что в примере).
@@ -182,10 +179,10 @@ model:
 
 **Доступные инструменты (2):**
 
-| MCP Tool | Назначение | LLM |
-|----------|-----------|-----|
-| `ctx_build` | Полный AI-контекст (8 секций) | Да |
-| `ctx_gitlab_mr` | Контекст из GitLab Merge Request | Нет |
+| MCP Tool | Назначение | LLM | Время |
+|----------|-----------|-----|-------|
+| `ctx_build` | Полный AI-контекст (8 секций) | Да | ~19s |
+| `ctx_gitlab_mr` | Метаданные MR + диффы через GitLab API | Нет | <2s |
 
 Внутренние тулзы gatherer'а (15 штук: `get_summary`, `search_symbol`, `get_dependencies`, `compact_file`, `read_file`, `classify_entities`, `sample_signatures`, `find_similar`, `rank_files`, `get_docs`, `get_module_graph`, `get_call_graph`, `find_files`, `list_files`, `get_token_budget`) используются внутри `ctx_build` и не экспортируются как отдельные MCP-эндпоинты.
 
@@ -198,14 +195,25 @@ model:
 ## GitLab интеграция
 
 ```bash
-# Анализ Merge Request
+# MCP: получить метаданные MR + диффы через GitLab API
+# В Claude Code: mcp__ctx-builder__ctx_gitlab_mr(project_id="group/project", mr_iid=5)
+
+# CLI: то же самое через флаг --gitlab-mr
 ctx-build -p . --gitlab-mr 123:5
 
 # Свой GitLab инстанс
 ctx-build -p . --gitlab-mr 123:5 --gitlab-url https://gitlab.example.com
 ```
 
-Требуется: `GITLAB_TOKEN=glpat-xxxx` в переменных окружения.
+Требуется: `GITLAB_TOKEN=glpat-xxxx` в `.env` (права `read_api`).
+
+### Как работает `ctx_gitlab_mr`
+
+1. **Забирает MR** через GitLab API — заголовок, описание, автор, source/target ветки
+2. **Включает диффы** — содержимое изменений (до 200 строк/файл, макс 5 файлов) встраивается прямо в вывод
+3. **Бинарные файлы** пропускаются, новые/удалённые/переименованные помечаются
+
+Никакого клонирования, никакого LLM — только API. Результат можно скормить `ctx_build --task` для получения полного архитектурного контекста.
 
 ## Архитектура агента
 
@@ -305,19 +313,6 @@ CLI (cli.py)              MCP Server (mcp_server.py)
 - **ctx_build (холодный):** ~20s (индекс + 1 LLM-планер + 1 LLM-райтер + параллельный execute)
 - **ctx_build (горячий):** ~18s (<1s индекс + 1 LLM-планер + 1 LLM-райтер + параллельный execute)
 
-## Результаты тестирования (2026-05-22, plan+execute, deepseek-v4-flash)
-
-| Проект | Файлов | Классов | Методов | Deps | Индекс (хол) | Индекс (гор) | Шагов LLM | get_deps |
-|--------|--------|---------|---------|------|-------------|-------------|-----------|----------|
-| nopCommerce (C#) | 6 350 | 3 617 | 9 869 | 51K | 58s | <1s | 1 | 4-7K |
-| directus (TS) | 4 075 | 3 128 | 1 349 | 7 988 | 9s | <1s | 1 | 0.3-1.6K |
-| strapi (TS) | 5 907 | 5 631 | 1 586 | 8 996 | 7s | <1s | 1 | 0.6-1.8K |
-| FPSSample (C#/Unity) | 12 727 | 2 152 | 8 239 | 81K | 39s | <1s | 1 | 5.6-7.8K |
-| EpicSurvivalGame (C++) | 766 | 38 | 329 | 120 | 1s | <1s | 1 | 0-1.2K |
-| rustdesk (Dart+Rust) | 928 | 570 | 2 838 | 216 | 5s | <1s | 1 | 0.6-1.5K |
-
-**Plan+Execute — всегда 1 LLM-шаг в фазе сбора.** `get_dependencies` вызывается в 100% запусков (против 71-93% в старой gatherer-архитектуре). Все 8 секций документа заполняются реальными данными.
-
 **Модели:**
 
 | Модель | LLM время | Качество | Батчинг |
@@ -325,7 +320,3 @@ CLI (cli.py)              MCP Server (mcp_server.py)
 | deepseek-v4-flash | ~19s | Хорошее | Не нужен (plan+execute) |
 | deepseek-v4-pro | ~35s | Отличное | Не нужен (plan+execute) |
 | deepseek-chat | ~25s | Среднее | Не рекомендуется |
-
-## Лицензия
-
-MIT
