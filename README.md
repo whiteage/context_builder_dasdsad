@@ -177,12 +177,13 @@ similarity:
 **Важно:** `command` должен указывать на python с установленными зависимостями (виртуальное окружение или системный python).  
 **env** — опционально. Если не указан, ключи берутся из `.env` в корне проекта.
 
-**Доступные инструменты (2):**
+**Доступный инструмент (1):**
 
 | MCP Tool | Назначение | LLM | Время |
 |----------|-----------|-----|-------|
-| `ctx_build` | Полный AI-контекст (8 секций) | Да | ~19s |
-| `ctx_gitlab_mr` | Метаданные MR + диффы через GitLab API | Нет | <2s |
+| `ctx_build` | Полный AI-контекст (8 секций). Поддерживает локальные проекты и GitLab URL | Да | ~20-60s |
+
+`ctx_gitlab_mr` удалён — его функциональность встроена в `ctx_build` через параметр `gitlab_repo`.
 
 Внутренние тулзы gatherer'а (15 штук: `get_summary`, `search_symbol`, `get_dependencies`, `compact_file`, `read_file`, `classify_entities`, `sample_signatures`, `find_similar`, `rank_files`, `get_docs`, `get_module_graph`, `get_call_graph`, `find_files`, `list_files`, `get_token_budget`) используются внутри `ctx_build` и не экспортируются как отдельные MCP-эндпоинты.
 
@@ -195,25 +196,38 @@ similarity:
 ## GitLab интеграция
 
 ```bash
-# MCP: получить метаданные MR + диффы через GitLab API
-# В Claude Code: mcp__ctx-builder__ctx_gitlab_mr(project_id="group/project", mr_iid=5)
+# MCP: проект или MR через параметр gitlab_repo
+# ctx_build(project="ctx_build_bench", gitlab_repo="group/project")
+# ctx_build(project="ctx_build_bench", gitlab_repo="https://gitlab.com/group/project/-/merge_requests/123")
 
-# CLI: то же самое через флаг --gitlab-mr
-ctx-build -p . --gitlab-mr 123:5
-
-# Свой GitLab инстанс
-ctx-build -p . --gitlab-mr 123:5 --gitlab-url https://gitlab.example.com
+# CLI
+ctx-build -p ctx_build_bench --gitlab-repo "group/project"
+ctx-build -p ctx_build_bench --gitlab-repo "group/project" -b develop
 ```
 
-Требуется: `GITLAB_TOKEN=glpat-xxxx` в `.env` (права `read_api`).
+Требуется: `GITLAB_TOKEN=glpat-xxxx` в `.env` (права `read_api` + `read_repository`).
 
-### Как работает `ctx_gitlab_mr`
+### Как работает GitLab-режим
 
-1. **Забирает MR** через GitLab API — заголовок, описание, автор, source/target ветки
-2. **Включает диффы** — содержимое изменений (до 200 строк/файл, макс 5 файлов) встраивается прямо в вывод
-3. **Бинарные файлы** пропускаются, новые/удалённые/переименованные помечаются
+1. **Парсит URL** — поддерживает проекты, MR, self-hosted инстансы
+2. **Проверяет локальный кеш** — если репо уже склонирован, делает `git fetch` + `checkout`
+3. **Клонирует** (если нет) — `git clone --depth=1 --branch <branch>`
+4. **Для MR** — чекаутит `refs/merge-requests/{iid}/head`
+5. **Запускает ctx_build** на склонированном репо с авто-сгенерированным task
 
-Никакого клонирования, никакого LLM — только API. Результат можно скормить `ctx_build --task` для получения полного архитектурного контекста.
+Прогресс пишется в `.ctx_build_progress` в клон-директории во время выполнения.
+
+### Поддерживаемые форматы URL
+
+| Формат | Пример |
+|--------|--------|
+| Проект (полный) | `https://gitlab.com/group/project` |
+| MR (полный) | `https://gitlab.com/group/project/-/merge_requests/123` |
+| Проект (короткий) | `group/project` |
+| MR (короткий) | `group/project:123` |
+| Self-hosted | `https://gitlab.example.com/group/project` |
+
+Параметр `branch` работает только в режиме проекта (для MR используется MR HEAD).
 
 ## Архитектура агента
 

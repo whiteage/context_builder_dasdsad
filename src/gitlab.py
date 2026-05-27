@@ -254,6 +254,46 @@ class GitLabClient:
         return target
 
 
+    def setup_project_repo(self, project_id: int | str,
+                           parent_dir: str | Path = "ctx_build_bench",
+                           branch: str | None = None) -> Path:
+        """Ensure a local clone exists, is up to date, and on the right branch.
+
+        1. If repo already exists locally → fetch + checkout branch + fast-forward
+        2. If not → clone --depth=1
+
+        Returns the path to the repo directory.
+        """
+        project = self.get_project(project_id)
+        target = Path(parent_dir).resolve() / project.path_with_namespace
+        target_branch = branch or project.default_branch
+
+        clone_url = f"{self.url}/{project.path_with_namespace}.git"
+        if self.token:
+            proto, rest = clone_url.split("://", 1)
+            clone_url = f"{proto}://oauth2:{self.token}@{rest}"
+
+        if (target / ".git").is_dir():
+            # Repo exists — fetch latest and checkout target branch
+            import sys as _sys
+            print(f"[gitlab] Fetching {target_branch} in {target}...", file=_sys.stderr, flush=True)
+            _run_git(["git", "-C", str(target), "fetch", "--depth=1",
+                       "origin", target_branch], timeout=120)
+            _run_git(["git", "-C", str(target), "checkout", target_branch], timeout=30)
+            _run_git(["git", "-C", str(target), "reset", "--hard",
+                       f"origin/{target_branch}"], timeout=30)
+            print(f"[gitlab] Checked out {target_branch} in {target}", file=_sys.stderr, flush=True)
+        else:
+            import sys as _sys
+            print(f"[gitlab] Cloning {clone_url.replace(self.token, '***')} to {target}...", file=_sys.stderr, flush=True)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            _run_git(["git", "clone", "--depth=1", "--branch", target_branch,
+                       clone_url, str(target)], timeout=300)
+            print(f"[gitlab] Clone done: {target}", file=_sys.stderr, flush=True)
+
+        return target
+
+
 def _run_git(cmd: list[str], timeout: int = 300) -> None:
     """Run a git command, raise GitLabError on failure."""
     import subprocess
@@ -264,7 +304,14 @@ def _run_git(cmd: list[str], timeout: int = 300) -> None:
         "GIT_ASKPASS": "echo",
         "GCM_INTERACTIVE": "Never",
     }
-    result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, env=env)
+    # Inject credential disable flags right after 'git'
+    parts = list(cmd)
+    parts.insert(1, "-c")
+    parts.insert(2, "credential.helper=")
+    result = subprocess.run(
+        parts, capture_output=True, text=True, timeout=timeout,
+        env=env, stdin=subprocess.DEVNULL,
+    )
     if result.returncode != 0:
         raise GitLabError(f"Git command failed: {' '.join(cmd)}\n{result.stderr[:300]}")
 
@@ -276,6 +323,76 @@ class GitLabError(Exception):
 def _encode(value: str | int) -> str:
     """URL-encode a path segment."""
     return urllib.request.quote(str(value), safe="")
+
+
+def parse_gitlab_url(url: str) -> tuple[str, str, int | None]:
+    """Parse a GitLab URL into (gitlab_url, project_id, mr_iid_or_none).
+
+    Supports:
+    - MR URL: https://gitlab.com/group/project/-/merge_requests/123
+    - Project URL: https://gitlab.com/group/project
+    - Self-hosted: https://gitlab.example.com/group/sub/project/-/merge_requests/42
+    - Short MR: project_id:mr_iid (e.g. '123:5' or 'group/project:5')
+    - Short project: group/project
+
+    Returns mr_iid=None for plain project URLs.
+
+    Raises GitLabError if the URL can't be parsed.
+    """
+    url = url.strip()
+
+    # Short form: project_id:mr_iid or group/project
+    if "://" not in url:
+        # MR short form: has a colon followed by digits at the end
+        if ":" in url:
+            parts = url.rsplit(":", 1)
+            if len(parts) == 2 and parts[1].isdigit():
+                return ("https://gitlab.com", parts[0], int(parts[1]))
+        # Project short form: group/project (no colon+digits)
+        if "/" in url and " " not in url:
+            return ("https://gitlab.com", url, None)
+        raise GitLabError(
+            f"Cannot parse GitLab URL: {url}\n"
+            "Expected: https://gitlab.com/group/project or\n"
+            "https://gitlab.com/group/project/-/merge_requests/123 or\n"
+            "project_id:mr_iid (e.g. '123:5')"
+        )
+
+    # Full URL: try MR pattern first, then project pattern
+    import re as _re
+
+    mr_match = _re.match(
+        r"^(https?://[^/]+)/(.+)/-/merge_requests/(\d+)/?$",
+        url
+    )
+    if mr_match:
+        return (mr_match.group(1), mr_match.group(2).rstrip("/"), int(mr_match.group(3)))
+
+    # Plain project URL: https://gitlab.com/group/project (with or without trailing slash)
+    project_match = _re.match(
+        r"^(https?://[^/]+)/([^/]+(?:/[^/]+)+)/?$",
+        url
+    )
+    if project_match:
+        return (project_match.group(1), project_match.group(2).rstrip("/"), None)
+
+    raise GitLabError(
+        f"Cannot parse GitLab URL: {url}\n"
+        "Expected: https://gitlab.com/group/project or\n"
+        "https://gitlab.com/group/project/-/merge_requests/123 or\n"
+        "project_id:mr_iid (e.g. '123:5')"
+    )
+
+
+def parse_mr_url(url: str) -> tuple[str, str, int]:
+    """Backwards-compatible wrapper. Use parse_gitlab_url instead.
+
+    Raises GitLabError if the URL is not an MR URL (no mr_iid).
+    """
+    base, project, mr_iid = parse_gitlab_url(url)
+    if mr_iid is None:
+        raise GitLabError(f"Not a merge request URL: {url}\nExpected MR URL format: .../-/merge_requests/123 or project_id:mr_iid")
+    return (base, project, mr_iid)
 
 
 # ── Convenience ──────────────────────────────────────────────────────
